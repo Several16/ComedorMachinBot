@@ -5,6 +5,7 @@ const crypto = require("crypto");
 const { spawn } = require("child_process");
 const express = require("express");
 const TelegramBot = require("node-telegram-bot-api");
+const cron = require("node-cron");
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_ALLOWED_CHAT_ID = process.env.TELEGRAM_ALLOWED_CHAT_ID || "";
@@ -544,43 +545,86 @@ async function stopJobs(chatId, stopAll = false) {
   };
 }
 
+let activeCronJob = null;
+let currentCronTime = "-";
+
 function unsupportedSchedulerResult() {
-  return { ok: false, code: -1, stdout: "", stderr: SCHEDULER_UNSUPPORTED_MESSAGE };
+  return { ok: false, code: -1, stdout: "", stderr: "Error en el planificador." };
 }
 
 async function runTaskCommand(args = []) {
-  if (!IS_WINDOWS) return unsupportedSchedulerResult();
-  return runCommand("schtasks", args);
+  if (args[0] === "/Run") {
+    if (!adminChatId()) return { ok: false, stderr: "No hay admin configurado para auto-ejecutar." };
+    const result = startBot(adminChatId(), {
+      dni: DEFAULTS.dni,
+      codigo: DEFAULTS.codigo,
+      turboMode: DEFAULTS.turboMode,
+    });
+    if (!result.started) return { ok: false, stderr: result.reason };
+    if (telegramBotClient) {
+      telegramBotClient.sendMessage(adminChatId(), "⏰ Auto-ejecución iniciada por tarea programada.").catch(()=>{});
+    }
+    return { ok: true, stdout: "Iniciado auto-run." };
+  }
+  if (args[0] === "/End") {
+    if (adminChatId()) await stopJobs(adminChatId(), true);
+    return { ok: true, stdout: "Procesos detenidos." };
+  }
+  if (args[0] === "/Change" && args[3] === "/DISABLE") {
+    if (activeCronJob) { activeCronJob.stop(); activeCronJob = null; }
+    settings.cronEnabled = false;
+    saveState();
+    return { ok: true, stdout: "Tarea deshabilitada." };
+  }
+  if (args[0] === "/Change" && args[3] === "/ENABLE") {
+    settings.cronEnabled = true;
+    saveState();
+    ensureTaskAt(currentCronTime);
+    return { ok: true, stdout: "Tarea habilitada." };
+  }
+  return unsupportedSchedulerResult();
 }
 
 async function getTaskStatus() {
-  if (!IS_WINDOWS) {
-    return {
-      exists: false,
-      state: "No disponible en este sistema",
-      nextRun: "-",
-      lastRun: "-",
-      lastResult: "-",
-      taskState: "-",
-      details: SCHEDULER_UNSUPPORTED_MESSAGE,
-    };
-  }
-  const r = await runTaskCommand(["/Query", "/TN", TASK_NAME, "/V", "/FO", "LIST"]);
-  if (!r.ok) return { exists: false, state: "No existe", details: (r.stderr || r.stdout || "").trim() };
-  const fields = parseListOutput(r.stdout);
   return {
-    exists: true,
-    state: fields["Estado"] || fields.Status || "",
-    nextRun: fields["Hora próxima ejecución"] || fields["Next Run Time"] || "",
-    lastRun: fields["Último tiempo de ejecución"] || fields["Last Run Time"] || "",
-    lastResult: fields["Último resultado"] || fields["Last Result"] || "",
-    taskState: fields["Estado de tarea programada"] || fields["Scheduled Task State"] || "",
+    exists: !!currentCronTime && currentCronTime !== "-",
+    state: settings.cronEnabled !== false ? "Habilitado" : "Deshabilitado",
+    nextRun: activeCronJob ? "Hoy a las " + currentCronTime : "-",
+    lastRun: "-",
+    lastResult: "-",
+    taskState: activeCronJob ? "Corriendo en Node (Linux)" : "Detenido",
   };
 }
 
 async function ensureTaskAt(time) {
-  if (!IS_WINDOWS) return unsupportedSchedulerResult();
-  return runTaskCommand(["/Create", "/SC", "DAILY", "/TN", TASK_NAME, "/TR", TASK_ACTION, "/ST", time, "/F"]);
+  if (!time || !/^\d{2}:\d{2}$/.test(time)) return { ok: false, stderr: "Formato inválido" };
+  const [hh, mm] = time.split(":");
+  
+  if (activeCronJob) {
+    activeCronJob.stop();
+  }
+  
+  settings.cronTime = time;
+  saveState();
+  currentCronTime = time;
+  
+  if (settings.cronEnabled !== false) {
+    // node-cron usa el servidor local. 
+    // Cron format: min hour dom mon dow
+    activeCronJob = cron.schedule(`${mm} ${hh} * * *`, () => {
+      runTaskCommand(["/Run"]);
+    }, {
+      scheduled: true,
+      timezone: "America/Lima"
+    });
+  }
+  
+  return { ok: true, stdout: "Tarea creada/actualizada." };
+}
+
+// Restore saved cron on startup
+if (settings.cronTime) {
+  ensureTaskAt(settings.cronTime);
 }
 
 function userKeyboard(isAdminUser) {
