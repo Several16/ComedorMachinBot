@@ -1345,31 +1345,43 @@ bot.on("message", async (msg) => {
 
 bot.on("callback_query", async (query) => {
   const chatId = query.message.chat.id;
-  if (!isAdmin(chatId)) return bot.answerCallbackQuery(query.id, { text: "No autorizado.", show_alert: true });
-  
+  if (!hasActiveLicense(chatId)) return bot.answerCallbackQuery(query.id, { text: "No tienes licencia activa.", show_alert: true });
+
   const data = query.data;
+  const u = licenses.users[String(chatId)];
+  if (!u || !u.autoRun) return bot.answerCallbackQuery(query.id, { text: "Error al leer perfil." });
+
   try {
     if (data === "cron_enable") {
-      await runTaskCommand(["/Change", "", "", "/ENABLE"]);
+      u.autoRun.enabled = true;
+      saveState();
+      setupUserCron(chatId);
       await bot.answerCallbackQuery(query.id, { text: "Tarea habilitada." });
-      await bot.sendMessage(chatId, "✅ Tarea automática habilitada.");
+      await bot.sendMessage(chatId, "✅ Tu tarea automática fue ENCENDIDA.");
     } else if (data === "cron_disable") {
-      await runTaskCommand(["/Change", "", "", "/DISABLE"]);
+      u.autoRun.enabled = false;
+      saveState();
+      setupUserCron(chatId);
       await bot.answerCallbackQuery(query.id, { text: "Tarea deshabilitada." });
-      await bot.sendMessage(chatId, "❌ Tarea automática deshabilitada.");
-    } else if (data === "cron_run") {
-      await bot.answerCallbackQuery(query.id, { text: "Iniciando proceso..." });
-      await runTaskCommand(["/Run"]);
+      await bot.sendMessage(chatId, "❌ Tu tarea automática fue APAGADA.");
     } else if (data === "cron_time") {
       setFlow(chatId, { type: "cron_time", step: "time" });
       await bot.answerCallbackQuery(query.id);
-      await bot.sendMessage(chatId, "Envíame la nueva hora en formato HH:mm (ejemplo: 07:00).", { reply_markup: cancelKeyboard() });
+      await bot.sendMessage(chatId, "Envíame la nueva hora objetivo en formato HH:mm (ejemplo: 07:00). El bot arrancará 3 minutos antes.", { reply_markup: cancelKeyboard() });
+    } else if (data === "cron_credentials") {
+      setFlow(chatId, { type: "cron_credentials", step: "dni", data: {} });
+      await bot.answerCallbackQuery(query.id);
+      await bot.sendMessage(chatId, "Vamos a configurar tus datos automáticos.\n1/2 Envíame tu DNI (solo números).", { reply_markup: cancelKeyboard() });
+    } else if (data === "cron_mode") {
+      u.autoRun.turboMode = !u.autoRun.turboMode;
+      saveState();
+      await bot.answerCallbackQuery(query.id, { text: `Modo cambiado a ${u.autoRun.turboMode ? "TURBO" : "NORMAL"}` });
+      await bot.sendMessage(chatId, `✅ Modo automático cambiado a: ${u.autoRun.turboMode ? "⚡ TURBO" : "🐢 NORMAL"}`);
     }
   } catch (err) {
     console.error(err);
   }
 });
-
 bot.on("polling_error", (error) => {
   const message = String(error && error.message ? error.message : error);
   console.error("Polling error:", message);
