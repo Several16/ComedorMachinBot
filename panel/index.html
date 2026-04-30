@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Panel Licencias - Charola Telegram</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <h1>Panel de Licencias</h1>
+        <p>Administra usuarios, códigos y estado del bot de Telegram.</p>
+      </header>
+
+      <section class="card">
+        <h2>Acceso</h2>
+        <div class="row">
+          <input id="panelKey" placeholder="ADMIN_PANEL_KEY" />
+          <button id="saveKey">Guardar clave</button>
+          <button id="refresh">Actualizar</button>
+        </div>
+        <small id="status">Sin conectar.</small>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>Resumen</h2>
+          <div id="summary" class="kv"></div>
+        </article>
+
+        <article class="card">
+          <h2>Crear códigos</h2>
+          <div class="row">
+            <input id="codeDays" type="number" value="30" min="1" />
+            <input id="codeQty" type="number" value="1" min="1" max="100" />
+            <button id="createCodes">Crear</button>
+          </div>
+          <pre id="createdCodes"></pre>
+        </article>
+
+        <article class="card">
+          <h2>Licencia directa a chat_id</h2>
+          <div class="row">
+            <input id="grantChatId" placeholder="chat_id" />
+            <input id="grantDays" type="number" value="30" min="1" />
+            <button id="grantBtn">Otorgar</button>
+            <button id="revokeBtn">Revocar</button>
+          </div>
+        </article>
+
+        <article class="card">
+          <h2>Mantenimiento</h2>
+          <div class="row">
+            <button id="clearCapturesBtn">Borrar todas las capturas</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="card">
+        <h2>Usuarios</h2>
+        <div id="users"></div>
+      </section>
+
+      <section class="card">
+        <h2>Códigos</h2>
+        <div id="codes"></div>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+  </html>

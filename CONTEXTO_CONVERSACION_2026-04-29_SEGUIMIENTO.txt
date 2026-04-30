@@ -1,0 +1,110 @@
+CONTEXTO GUARDADO - 2026-04-29 (SEGUIMIENTO)
+
+OBJETIVO DE ESTA SESION
+- Dejar el bot funcional local/VPS.
+- Hacer el bot de Telegram más intuitivo.
+- Habilitar concurrencia real para múltiples usuarios/dispositivos.
+- Mejorar feedback de ejecución (estado/carga/fin).
+- Añadir opción para liberar espacio borrando capturas.
+
+PROBLEMA PRINCIPAL DETECTADO
+- /iniciar fallaba por dependencia faltante:
+  Error: Cannot find module 'playwright'
+- Se corrigió agregando Playwright en dependencies.
+
+CAMBIOS IMPLEMENTADOS (RESUMEN)
+
+1) ESTABILIDAD Y VPS
+- Se agregó `playwright` en `package.json`.
+- Scripts añadidos:
+  - `install:browsers`
+  - `install:browsers:linux`
+  - `start:pm2`
+- Polling de Telegram reforzado con reintentos ante fallas de red/DNS.
+- Compatibilidad cross-platform:
+  - Scheduler de Windows responde mensaje claro en Linux.
+  - Detener procesos funciona en Windows y Linux.
+- Panel admin:
+  - Soporta fallback de puerto si 4020 está ocupado (4021, 4022, ...).
+
+2) UX TELEGRAM (MÁS INTUITIVO)
+- Teclado mejorado con botones:
+  - 🚀 Iniciar ahora
+  - ⚙️ Configurar inicio
+  - 📊 Estado
+  - 🧵 Mis procesos
+  - 🖼️ Foto
+  - 🛑 Detener mis procesos
+  - 🔐 Mi licencia
+  - 🎟️ Activar licencia
+  - ❓ Ayuda
+  - 🆔 Mi ID
+  - (Admin) 🛠️ Admin, 📋 Licencias, 🧹 Limpiar capturas
+- Flujos guiados:
+  - `/config_iniciar`: DNI -> código -> modo TURBO/NORMAL
+  - `/activar` sin código inicia flujo guiado de activación
+  - `/cancel` cancela flujo activo
+- Comandos de bot actualizados (`setMyCommands`) para mostrar opciones útiles.
+
+3) CONCURRENCIA (PROCESOS PARALELOS)
+- Refactor de proceso único a gestor de jobs concurrentes:
+  - Mapa de jobs activos por `jobId`.
+  - Estado por chat y global.
+  - Historial de últimas salidas.
+- Comandos:
+  - `/mis_procesos` lista procesos activos del chat.
+  - `/detener` detiene procesos del chat.
+  - `/detener all` (admin) detiene todos los procesos.
+- LÍMITES ACTUALES:
+  - `CHAROLA_MAX_PARALLEL_JOBS=20` (global por defecto)
+  - `CHAROLA_MAX_PARALLEL_JOBS_PER_CHAT=15` (por chat por defecto, actualizado en esta sesión)
+
+4) FEEDBACK DE EJECUCIÓN
+- Al iniciar proceso se devuelve:
+  - Job ID
+  - PID
+  - Modo
+  - Carga actual
+- Indicador de “cargando”:
+  - Mientras haya jobs activos en el chat, el bot muestra “escribiendo...” periódicamente.
+  - Configurable con `CHAROLA_LOADING_ACTION_INTERVAL_MS` (default 4000).
+- Notificación automática al finalizar cada job:
+  - Estado (éxito/fatal/sin ticket/error)
+  - Código de salida
+  - Log asociado
+  - Captura/QR si existe
+  - Controlado por `CHAROLA_NOTIFY_ON_FINISH=true` (default)
+
+5) LIMPIEZA DE ESPACIO
+- Se agregó limpieza de capturas en `runs`:
+  - Telegram admin: `/limpiar_capturas` o botón 🧹 Limpiar capturas
+  - Panel admin: endpoint `POST /api/admin/clear-captures` y botón UI
+- Devuelve número de archivos eliminados y espacio liberado.
+
+ARCHIVOS MODIFICADOS EN ESTA SESION
+- C:\Users\USUARIO\comedor-bot-telegram\telegram-bot.js
+- C:\Users\USUARIO\comedor-bot-telegram\package.json
+- C:\Users\USUARIO\comedor-bot-telegram\README.md
+- C:\Users\USUARIO\comedor-bot-telegram\.env.example
+- C:\Users\USUARIO\comedor-bot-telegram\panel\app.js
+- C:\Users\USUARIO\comedor-bot-telegram\panel\index.html
+
+ESTADO ACTUAL
+- Bot funcional en local y listo para VPS.
+- Concurrencia habilitada.
+- UX mejorada.
+- Feedback de carga y cierre implementado.
+- Limpieza de capturas implementada.
+
+NOTA OPERATIVA IMPORTANTE
+- Solo una instancia del bot por token Telegram.
+- Si hay más de una, aparece:
+  `409 Conflict: terminated by other getUpdates request`
+
+VARIABLES RELEVANTES (ACTUALES POR DEFECTO)
+- CHAROLA_MAX_PARALLEL_JOBS=20
+- CHAROLA_MAX_PARALLEL_JOBS_PER_CHAT=15
+- CHAROLA_LOADING_ACTION_INTERVAL_MS=4000
+- CHAROLA_NOTIFY_ON_FINISH=true
+
+FIN DEL CONTEXTO

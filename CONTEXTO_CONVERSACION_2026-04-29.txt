@@ -1,0 +1,96 @@
+CONTEXTO GUARDADO - 2026-04-29
+
+OBJETIVO ORIGINAL
+- Automatizar registro en https://comedor.uncp.edu.pe/charola con:
+  - DNI: 73968815
+  - Codigo: 2023200615D
+- Generar ticket con QR sin esperar manualmente.
+
+LO QUE SE IMPLEMENTO
+1) Proyecto principal local:
+   Ruta: C:\Users\USUARIO\comedor-bot
+   - Bot Playwright: charola-auto.js
+   - Script PowerShell: register-ticket.ps1
+   - Tarea programada Windows: CharolaUNCPAutoTicket
+   - UI web local: ui-server.js + carpeta ui
+   - Lanzadores: abrir-panel.bat, iniciar-control-movil.bat
+   - Modo turbo agregado (reintentos rapidos).
+
+2) Proyecto separado SOLO Telegram:
+   Ruta: C:\Users\USUARIO\comedor-bot-telegram
+   - Bot independiente: telegram-bot.js
+   - Automatizador propio: charola-auto.js
+   - Script tarea: register-ticket.ps1
+   - Panel admin local integrado: carpeta panel + API en puerto 4020
+   - Licencias por usuario (chat_id), codigos de activacion, admin unico.
+
+CAMBIOS CLAVE EN TELEGRAM SEPARADO
+- Admin:
+  - /hacer_admin (primera configuracion)
+  - /set_admin <chat_id>
+- Licencias:
+  - /crear_licencia <dias> [cantidad]
+  - /activar CODIGO
+  - /dar_licencia <chat_id> <dias>
+  - /quitar_licencia <chat_id>
+  - /licencias
+- Uso amigable:
+  - Botones: Iniciar, Estado, Foto, Mi licencia, Ayuda, Admin
+  - /start y /menu con teclado.
+- Panel admin:
+  - URL: http://localhost:4020
+  - Requiere ADMIN_PANEL_KEY
+  - Gestiona resumen, usuarios, codigos, otorgar/revocar.
+
+ARCHIVOS IMPORTANTES (PROYECTO TELEGRAM)
+- C:\Users\USUARIO\comedor-bot-telegram\telegram-bot.js
+- C:\Users\USUARIO\comedor-bot-telegram\charola-auto.js
+- C:\Users\USUARIO\comedor-bot-telegram\register-ticket.ps1
+- C:\Users\USUARIO\comedor-bot-telegram\iniciar-telegram.bat
+- C:\Users\USUARIO\comedor-bot-telegram\panel\index.html
+- C:\Users\USUARIO\comedor-bot-telegram\panel\app.js
+- C:\Users\USUARIO\comedor-bot-telegram\panel\styles.css
+- C:\Users\USUARIO\comedor-bot-telegram\data\licenses.json
+- C:\Users\USUARIO\comedor-bot-telegram\data\settings.json
+
+VARIABLES DE ENTORNO REQUERIDAS
+- TELEGRAM_BOT_TOKEN=...
+- (opcional) TELEGRAM_ALLOWED_CHAT_ID=...
+- (opcional) TELEGRAM_ADMIN_CHAT_ID=...
+- (opcional, recomendado fijo) ADMIN_PANEL_KEY=...
+- (opcional) CHAROLA_TASK_NAME=CharolaUNCPAutoTicketTG
+
+COMO ARRANCAR (TELEGRAM SEPARADO)
+1) Abrir PowerShell nuevo
+2) cd C:\Users\USUARIO\comedor-bot-telegram
+3) npm install
+4) .\iniciar-telegram.bat
+5) Ver en consola:
+   - "Bot Telegram con licencias iniciado."
+   - "Panel admin: http://localhost:4020"
+   - "PANEL_KEY: ..."
+6) En Telegram:
+   - /hacer_admin (si aun no hay admin)
+   - /start
+   - /status
+
+PROBLEMA REPORTADO Y CAUSA
+- Error repetido:
+  Polling error: getaddrinfo ENOTFOUND api.telegram.org
+- Causa:
+  Problema de DNS/conectividad de red del entorno (no del codigo del bot).
+- Accion sugerida:
+  Corregir DNS y salida a internet en el servidor donde se ejecute.
+
+PLAN PARA PRODUCCION 24/7
+- Usar VPS (DigitalOcean sirve).
+- Correr con PM2 para auto-reinicio:
+  - pm2 start telegram-bot.js --name charola-tg
+  - pm2 save
+  - pm2 startup
+- Configurar DNS correcto del servidor.
+
+ESTADO AL CIERRE
+- Todo listo localmente para continuar.
+- Contexto guardado en este archivo.
+
