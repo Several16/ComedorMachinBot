@@ -676,8 +676,7 @@ function helpText(isAdminUser) {
       "/quitar_licencia <chat_id>",
       "/licencias",
       "/limpiar_capturas",
-      "/crear_tarea [HH:mm], /hora HH:mm, /ejecutar, /parar_tarea, /habilitar, /deshabilitar",
-      "(los comandos de tarea programada son solo para Windows)"
+      "/crear_tarea [HH:mm], /hora HH:mm, /ejecutar, /parar_tarea, /habilitar, /deshabilitar"
     );
   }
   return base.join("\n");
