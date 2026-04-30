@@ -545,87 +545,70 @@ async function stopJobs(chatId, stopAll = false) {
   };
 }
 
-let activeCronJob = null;
-let currentCronTime = "-";
+const userCronJobs = new Map();
 
-function unsupportedSchedulerResult() {
-  return { ok: false, code: -1, stdout: "", stderr: "Error en el planificador." };
+function setupUserCron(chatId) {
+  const id = String(chatId);
+  const existingJob = userCronJobs.get(id);
+  if (existingJob) {
+    existingJob.stop();
+    userCronJobs.delete(id);
+  }
+
+  const u = licenses.users[id];
+  if (!u || !u.autoRun || !u.autoRun.enabled || !u.autoRun.time) return;
+
+  if (!hasActiveLicense(id)) return;
+
+  const time = u.autoRun.time;
+  if (!/^\d{2}:\d{2}$/.test(time)) return;
+  const [hh, mm] = time.split(":");
+
+  const job = cron.schedule(`${mm} ${hh} * * *`, () => {
+    if (!hasActiveLicense(id)) {
+      job.stop();
+      userCronJobs.delete(id);
+      return;
+    }
+    
+    const result = startBot(id, {
+      dni: u.autoRun.dni || DEFAULTS.dni,
+      codigo: u.autoRun.codigo || DEFAULTS.codigo,
+      turboMode: u.autoRun.turboMode !== false
+    });
+    
+    if (result.started && telegramBotClient) {
+      telegramBotClient.sendMessage(id, "⏰ Bot iniciado automáticamente por tu tarea programada.").catch(()=>{});
+    } else if (telegramBotClient) {
+      telegramBotClient.sendMessage(id, `⏰ Falló el inicio automático: ${result.reason}`).catch(()=>{});
+    }
+  }, {
+    scheduled: true,
+    timezone: "America/Lima"
+  });
+
+  userCronJobs.set(id, job);
 }
 
-async function runTaskCommand(args = []) {
-  if (args[0] === "/Run") {
-    if (!adminChatId()) return { ok: false, stderr: "No hay admin configurado para auto-ejecutar." };
-    const result = startBot(adminChatId(), {
-      dni: DEFAULTS.dni,
-      codigo: DEFAULTS.codigo,
-      turboMode: DEFAULTS.turboMode,
-    });
-    if (!result.started) return { ok: false, stderr: result.reason };
-    if (telegramBotClient) {
-      telegramBotClient.sendMessage(adminChatId(), "⏰ Auto-ejecución iniciada por tarea programada.").catch(()=>{});
-    }
-    return { ok: true, stdout: "Iniciado auto-run." };
+function initializeAllCrons() {
+  for (const id of Object.keys(licenses.users)) {
+    setupUserCron(id);
   }
-  if (args[0] === "/End") {
-    if (adminChatId()) await stopJobs(adminChatId(), true);
-    return { ok: true, stdout: "Procesos detenidos." };
-  }
-  if (args[0] === "/Change" && args[3] === "/DISABLE") {
-    if (activeCronJob) { activeCronJob.stop(); activeCronJob = null; }
-    settings.cronEnabled = false;
-    saveState();
-    return { ok: true, stdout: "Tarea deshabilitada." };
-  }
-  if (args[0] === "/Change" && args[3] === "/ENABLE") {
-    settings.cronEnabled = true;
-    saveState();
-    ensureTaskAt(currentCronTime);
-    return { ok: true, stdout: "Tarea habilitada." };
-  }
-  return unsupportedSchedulerResult();
 }
 
 async function getTaskStatus() {
   return {
-    exists: !!currentCronTime && currentCronTime !== "-",
-    state: settings.cronEnabled !== false ? "Habilitado" : "Deshabilitado",
-    nextRun: activeCronJob ? "A las " + currentCronTime : "-",
+    exists: true,
+    state: "Multi-usuario",
+    nextRun: "-",
     lastRun: "-",
     lastResult: "-",
-    taskState: activeCronJob ? "Corriendo en Node (Linux)" : "Detenido",
+    taskState: `Activas: ${userCronJobs.size}`,
   };
 }
 
-async function ensureTaskAt(time) {
-  if (!time || !/^\d{2}:\d{2}$/.test(time)) return { ok: false, stderr: "Formato inválido" };
-  const [hh, mm] = time.split(":");
-  
-  if (activeCronJob) {
-    activeCronJob.stop();
-  }
-  
-  settings.cronTime = time;
-  saveState();
-  currentCronTime = time;
-  
-  if (settings.cronEnabled !== false) {
-    // node-cron usa el servidor local. 
-    // Cron format: min hour dom mon dow
-    activeCronJob = cron.schedule(`${mm} ${hh} * * *`, () => {
-      runTaskCommand(["/Run"]);
-    }, {
-      scheduled: true,
-      timezone: "America/Lima"
-    });
-  }
-  
-  return { ok: true, stdout: "Tarea creada/actualizada." };
-}
-
-// Restore saved cron on startup
-if (settings.cronTime) {
-  ensureTaskAt(settings.cronTime);
-}
+// Initialize all user crons on startup
+setTimeout(initializeAllCrons, 2000);
 
 function userKeyboard(isAdminUser) {
   const base = [
@@ -683,13 +666,15 @@ function helpText(isAdminUser) {
 }
 
 async function sendStatus(bot, chatId) {
-  const task = await getTaskStatus();
   const ownJobs = listRunningJobs(chatId);
   const latestOwnExit = lastExitsByChat.get(String(chatId));
   const ownJobPids = ownJobs.slice(0, 5).map((j) => `${j.pid}`).join(", ");
   
   const licenseText = licenseStatusText(chatId);
   const licenseEmoji = licenseText.includes("❌") ? "❌" : "✅";
+
+  const u = licenses.users[String(chatId)];
+  const auto = u && u.autoRun ? u.autoRun : { enabled: false, time: "-" };
 
   const lines = [
     "📊 *Estado del Sistema*",
@@ -702,10 +687,9 @@ async function sendStatus(bot, chatId) {
     `*Cierre:* ${latestOwnExit ? `${latestOwnExit.at}` : "Nunca"}`,
     `*Código:* ${latestOwnExit ? latestOwnExit.code : "-"}`,
     "",
-    "⚙️ *Tarea Automática*",
-    `*Estado:* ${compact(task.state || task.taskState)}`,
-    `*Próxima:* ${compact(task.nextRun)}`,
-    `*Resultado:* ${compact(task.lastResult)}`,
+    "⚙️ *Tu Tarea Automática*",
+    `*Estado:* ${auto.enabled ? "✅ Habilitada" : "❌ Deshabilitada"}`,
+    `*Hora:* ${auto.time}`,
     "",
     `${licenseEmoji} *Licencia*`,
     licenseText,
@@ -807,13 +791,50 @@ async function handleFlowInput(bot, msg) {
       return true;
     }
     clearFlow(chatId);
-    const r = await ensureTaskAt(time);
-    if (!r.ok) {
-      await bot.sendMessage(chatId, `Error: ${r.stderr}`, { reply_markup: userKeyboard(admin) });
-      return true;
+    
+    const id = String(chatId);
+    const u = licenses.users[id];
+    if (u && u.autoRun) {
+      u.autoRun.time = time;
+      saveState();
+      setupUserCron(chatId);
     }
+    
     await bot.sendMessage(chatId, `✅ Hora actualizada a las ${time} (Perú).\nAsegúrate de habilitar la tarea usando el menú ⏰ Auto.`, { reply_markup: userKeyboard(admin) });
     return true;
+  }
+
+  if (flow.type === "cron_credentials") {
+    if (flow.step === "dni") {
+      const dni = text.replace(/\D/g, "");
+      if (dni.length < 8 || dni.length > 12) {
+        await bot.sendMessage(chatId, "DNI inválido. Debe tener entre 8 y 12 dígitos.", { reply_markup: cancelKeyboard() });
+        return true;
+      }
+      flow.data.dni = dni;
+      flow.step = "codigo";
+      setFlow(chatId, flow);
+      await bot.sendMessage(chatId, "2/2 Envíame tu código (ejemplo: 2023200615D).", { reply_markup: cancelKeyboard() });
+      return true;
+    }
+    if (flow.step === "codigo") {
+      const codigo = text.trim();
+      if (codigo.length < 4) {
+        await bot.sendMessage(chatId, "Código inválido.", { reply_markup: cancelKeyboard() });
+        return true;
+      }
+      clearFlow(chatId);
+      const id = String(chatId);
+      const u = licenses.users[id];
+      if (u && u.autoRun) {
+        u.autoRun.dni = flow.data.dni;
+        u.autoRun.codigo = codigo;
+        saveState();
+        setupUserCron(chatId);
+      }
+      await bot.sendMessage(chatId, `✅ Credenciales guardadas. DNI: ${flow.data.dni}, Código: ${codigo}`, { reply_markup: userKeyboard(admin) });
+      return true;
+    }
   }
 
   if (flow.type === "activate_code") {
@@ -936,16 +957,24 @@ async function onCommand(bot, msg, command, args) {
 
   
   if (command === "/menu_tarea") {
-    if (!adminRequired(chatId)) return;
-    const task = await getTaskStatus();
-    const txt = `⚙️ *Tarea Automática (Diaria)*\n───────────────\n*Estado:* ${task.state}\n*Hora:* ${currentCronTime || "No configurada"}\n*Plataforma:* ${task.taskState}\n\nSelecciona una acción:`;
+    if (!hasActiveLicense(chatId)) {
+      await bot.sendMessage(chatId, "No tienes licencia activa.");
+      return;
+    }
+    const id = String(chatId);
+    const u = licenses.users[id] || { chatId: id };
+    if (!u.autoRun) u.autoRun = { enabled: false, time: "07:00", dni: "", codigo: "", turboMode: true };
+    licenses.users[id] = u;
+    saveState();
+
+    const txt = `⚙️ *Tarea Automática (Diaria)*\n───────────────\n*Estado:* ${u.autoRun.enabled ? "✅ Habilitada" : "❌ Deshabilitada"}\n*Hora:* ${u.autoRun.time}\n*DNI:* ${u.autoRun.dni || "No configurado"}\n*Modo:* ${u.autoRun.turboMode ? "⚡ TURBO" : "🐢 NORMAL"}\n\nSelecciona una acción:`;
     const opts = {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "✅ Habilitar", callback_data: "cron_enable" }, { text: "❌ Deshabilitar", callback_data: "cron_disable" }],
-          [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }],
-          [{ text: "▶️ Ejecutar Ahora", callback_data: "cron_run" }]
+          [{ text: u.autoRun.enabled ? "❌ Deshabilitar" : "✅ Habilitar", callback_data: u.autoRun.enabled ? "cron_disable" : "cron_enable" }],
+          [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }, { text: "🔑 Credenciales", callback_data: "cron_credentials" }],
+          [{ text: "⚡ Modo: " + (u.autoRun.turboMode ? "TURBO" : "NORMAL"), callback_data: "cron_mode" }]
         ]
       }
     };
@@ -1349,7 +1378,8 @@ bot.on("callback_query", async (query) => {
 
   const data = query.data;
   const u = licenses.users[String(chatId)];
-  if (!u || !u.autoRun) return bot.answerCallbackQuery(query.id, { text: "Error al leer perfil." });
+  if (!u) return bot.answerCallbackQuery(query.id, { text: "Error al leer perfil." });
+  if (!u.autoRun) u.autoRun = { enabled: false, time: "07:00", dni: "", codigo: "", turboMode: true };
 
   try {
     if (data === "cron_enable") {
