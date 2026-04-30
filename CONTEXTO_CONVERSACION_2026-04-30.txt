@@ -1,0 +1,39 @@
+CONTEXTO GUARDADO - 2026-04-30
+
+OBJETIVOS LOGRADOS EN ESTA SESIÓN:
+1. OPTIMIZACIÓN DEL MOTOR PLAYWRIGHT (charola-auto.js):
+   - Se implementó el bloqueo de archivos CSS (`stylesheet`) en el Modo Turbo para acelerar dramáticamente la carga en servidores remotos con recursos limitados.
+   - Se reemplazó el uso de `.innerText()` por `.textContent()` en la lectura del DOM, eliminando el tiempo de renderizado visual y haciendo que la evaluación de "cupos", "éxito" o "error" sea instantánea.
+   - Se agregó `{ force: true }` a los clics del botón de acceso para evitar errores de interceptación por modales o animaciones de la página web de la UNCP.
+
+2. ESTABILIDAD EN VPS Y PREVENCIÓN DE ERRORES (telegram-bot.js):
+   - Se añadió un manejador robusto para "zombis" (procesos huérfanos de Chrome) capturando eventos `SIGINT` y `SIGTERM`, asegurando que la RAM del VPS (DigitalOcean) no se llene infinitamente al reiniciar PM2.
+   - Se incorporó soporte nativo para leer variables de entorno locales en producción mediante `require("dotenv").config()`.
+   - Se mejoró la reconexión de polling de Telegram ante micro-cortes de red, previniendo caídas críticas.
+
+3. REFACTORIZACIÓN DE UX/UI EN TELEGRAM:
+   - Se rediseñó el teclado (Reply Keyboard) para que sea más compacto y balanceado (4 botones por fila principal).
+   - Se formatearon todos los mensajes clave (`/status`, alertas de inicio, y `/start`) usando Markdown nativo (negritas, cursivas, iconos) para que parezcan tarjetas de control profesionales.
+   - Se cambió el confuso mensaje de espera "Estado: cargando (escribiendo...)" por una alerta visual clara ("⏳ Procesando... El bot está interactuando con la página web...").
+
+4. SISTEMA CRON MULTI-USUARIO CON PRE-ARRANQUE INTELIGENTE:
+   - Se migró el anticuado sistema de tareas programadas de Windows (schtasks) a `node-cron`, volviéndolo compatible 100% con Linux (Ubuntu).
+   - *Funcionalidad Clave:* Se diseñó una arquitectura "Pre-Emptive". Si un usuario agenda a las 07:00 AM, el bot se enciende solo, en segundo plano, a las 06:57 AM (3 minutos antes).
+   - Se añadió un botón interactivo "⏰ Auto" para los usuarios con licencia.
+   - Se implementó una interfaz de Inline Keyboard (botones integrados al mensaje) para:
+     - Encender/Apagar el modo automático.
+     - Cambiar la hora objetivo.
+     - Configurar el DNI y Código personal de forma independiente para cada usuario.
+     - Cambiar entre modo Turbo y Normal de la tarea programada.
+
+5. DEPLOYMENT EN DIGITALOCEAN (NYC):
+   - El bot fue migrado exitosamente a un Droplet de DigitalOcean en la región de New York (NYC2) para minimizar el "ping" hacia Perú.
+   - Se configuró con Ubuntu 24.04, Node.js 20, dependencias de Playwright para Linux (`--with-deps`), y PM2 para mantenerlo activo 24/7.
+
+ESTADO ACTUAL:
+- Código estable y subido a la rama `main` en el repositorio de GitHub: `Several16/ComedorMachinBot`.
+- VPS operativo en PM2 bajo el nombre `charola-tg`.
+
+PRÓXIMOS PASOS (FUTURO):
+- Monitorear el consumo de RAM del servidor de 2GB si se habilitan más de 5 cron-jobs paralelos a las 6:57 AM.
+- Considerar agregar logs en la base de datos sqlite en el futuro si los archivos de texto (logs) pesan demasiado en el VPS.
