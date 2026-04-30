@@ -37,3 +37,7 @@ ESTADO ACTUAL:
 PRÓXIMOS PASOS (FUTURO):
 - Monitorear el consumo de RAM del servidor de 2GB si se habilitan más de 5 cron-jobs paralelos a las 6:57 AM.
 - Considerar agregar logs en la base de datos sqlite en el futuro si los archivos de texto (logs) pesan demasiado en el VPS.
+
+6. DOCUMENTACIÓN FINAL:
+   - Se redactó y subió el archivo `MANUAL_DE_USUARIO.md` con instrucciones detalladas de uso, comandos de administración y explicación del sistema Pre-Emptive (arranque a las 6:57 AM).
+   - Fin de la sesión de optimización y despliegue. Todo funcional en producción.
