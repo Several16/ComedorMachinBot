@@ -39,6 +39,10 @@ const MAX_PARALLEL_JOBS = Math.max(1, safeNumber(process.env.CHAROLA_MAX_PARALLE
 const MAX_PARALLEL_JOBS_PER_CHAT = Math.max(1, safeNumber(process.env.CHAROLA_MAX_PARALLEL_JOBS_PER_CHAT, 15));
 const LOADING_ACTION_INTERVAL_MS = Math.max(2000, safeNumber(process.env.CHAROLA_LOADING_ACTION_INTERVAL_MS, 4000));
 const NOTIFY_JOB_FINISH = process.env.CHAROLA_NOTIFY_ON_FINISH !== "false";
+const AUTO_PRESTART_MINUTES = Math.max(0, Math.min(59, safeNumber(process.env.CHAROLA_AUTO_PRESTART_MINUTES, 3)));
+const AUTO_START_JITTER_MAX_MS = Math.max(0, safeNumber(process.env.CHAROLA_AUTO_JITTER_MAX_MS, 15000));
+const LICENSE_EXPIRY_REMINDER_DAYS = Math.max(1, Math.min(30, safeNumber(process.env.LICENSE_EXPIRY_REMINDER_DAYS, 3)));
+const LICENSE_REMINDER_CHECK_MINUTES = Math.max(10, safeNumber(process.env.LICENSE_REMINDER_CHECK_MINUTES, 60));
 
 const emptyLicenses = () => ({ users: {}, codes: {} });
 const emptySettings = () => ({ adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID || "" });
@@ -49,7 +53,9 @@ const runningJobs = new Map();
 const lastExitsByChat = new Map();
 const recentExits = [];
 const loadingIntervalsByChat = new Map();
+const sentLicenseReminderKeys = new Set();
 let telegramBotClient = null;
+let lastDuplicatePollingAlertMs = 0;
 
 if (!TELEGRAM_BOT_TOKEN) {
   console.error("Falta TELEGRAM_BOT_TOKEN.");
@@ -80,6 +86,58 @@ function stamp() {
 
 function compact(v) {
   return v === undefined || v === null || v === "" ? "-" : String(v);
+}
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function parseHourMinute(text) {
+  const raw = String(text || "").trim();
+  if (!/^\d{2}:\d{2}$/.test(raw)) return null;
+  const [hh, mm] = raw.split(":").map((x) => Number(x));
+  if (!Number.isInteger(hh) || !Number.isInteger(mm) || hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return { hh, mm };
+}
+
+function subtractMinutesFromTime(time, minutes) {
+  const parsed = parseHourMinute(time);
+  if (!parsed) return null;
+  const safeMinutes = Math.max(0, Math.floor(minutes));
+  const total = (((parsed.hh * 60 + parsed.mm - safeMinutes) % 1440) + 1440) % 1440;
+  return `${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`;
+}
+
+function getLimaNowParts() {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Lima",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(new Date());
+  const out = {};
+  for (const part of parts) out[part.type] = part.value;
+  return out;
+}
+
+function limaDateKey() {
+  const p = getLimaNowParts();
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+function nextAutoRunLabel(targetTime) {
+  const startTime = subtractMinutesFromTime(targetTime, AUTO_PRESTART_MINUTES);
+  if (!startTime) return "-";
+  const nowParts = getLimaNowParts();
+  const nowTotal = Number(nowParts.hour) * 60 + Number(nowParts.minute);
+  const parsedStart = parseHourMinute(startTime);
+  if (!parsedStart) return "-";
+  const startTotal = parsedStart.hh * 60 + parsedStart.mm;
+  const dayLabel = nowTotal < startTotal ? "Hoy" : "Mañana";
+  return `${dayLabel} ${startTime} (Lima)`;
 }
 
 function panelPublicUrl() {
@@ -228,6 +286,34 @@ function updateUserProfile(msg) {
   u.username = msg.from && msg.from.username ? msg.from.username : "";
   u.lastSeenAt = nowIso();
   licenses.users[chatId] = u;
+}
+
+function ensureUserProfile(chatId) {
+  const id = String(chatId);
+  const user = licenses.users[id] || { chatId: id, expiresAt: null };
+  user.chatId = id;
+  licenses.users[id] = user;
+  return user;
+}
+
+function ensureUserAutoRun(chatId) {
+  const user = ensureUserProfile(chatId);
+  if (!user.autoRun) {
+    user.autoRun = { enabled: false, time: "07:00", dni: "", codigo: "", turboMode: true };
+  }
+  return user;
+}
+
+function hasAutoCredentials(autoRun) {
+  if (!autoRun) return false;
+  const dni = String(autoRun.dni || "").replace(/\D/g, "");
+  const codigo = String(autoRun.codigo || "").trim();
+  return dni.length >= 8 && codigo.length >= 4;
+}
+
+function describeLastExit(exitInfo) {
+  if (!exitInfo) return "Nunca";
+  return `${exitCodeLabel(exitInfo.code)} (${exitInfo.at})`;
 }
 
 function hasActiveLicense(chatId) {
@@ -547,6 +633,50 @@ async function stopJobs(chatId, stopAll = false) {
 
 const userCronJobs = new Map();
 
+function getAutoMenuPayload(chatId) {
+  const user = ensureUserAutoRun(chatId);
+  const auto = user.autoRun;
+  const startAt = subtractMinutesFromTime(auto.time, AUTO_PRESTART_MINUTES) || "-";
+  const credentialsOk = hasAutoCredentials(auto);
+  const txt = [
+    "⚙️ *Tarea Automática (Diaria)*",
+    "───────────────",
+    `*Estado:* ${auto.enabled ? "✅ Habilitada" : "❌ Deshabilitada"}`,
+    `*Hora objetivo:* ${auto.time}`,
+    `*Inicio real:* ${startAt} (Lima)`,
+    `*Próxima ejecución:* ${auto.enabled ? nextAutoRunLabel(auto.time) : "-"}`,
+    `*Credenciales:* ${credentialsOk ? "✅ Configuradas" : "❌ Faltan DNI/Código"}`,
+    `*Modo:* ${auto.turboMode ? "⚡ TURBO" : "🐢 NORMAL"}`,
+    "",
+    "Selecciona una acción:",
+  ].join("\n");
+  const opts = {
+    parse_mode: "Markdown",
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: auto.enabled ? "❌ Deshabilitar" : "✅ Habilitar", callback_data: auto.enabled ? "cron_disable" : "cron_enable" },
+          { text: "▶️ Probar ahora", callback_data: "cron_run_now" },
+        ],
+        [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }, { text: "🔑 Credenciales", callback_data: "cron_credentials" }],
+        [{ text: `⚡ Modo: ${auto.turboMode ? "TURBO" : "NORMAL"}`, callback_data: "cron_mode" }],
+      ],
+    },
+  };
+  return { txt, opts };
+}
+
+async function renderAutoMenu(bot, chatId, messageId) {
+  const { txt, opts } = getAutoMenuPayload(chatId);
+  if (messageId) {
+    try {
+      await bot.editMessageText(txt, { chat_id: chatId, message_id: messageId, ...opts });
+      return;
+    } catch {}
+  }
+  await bot.sendMessage(chatId, txt, opts);
+}
+
 function setupUserCron(chatId) {
   const id = String(chatId);
   const existingJob = userCronJobs.get(id);
@@ -555,14 +685,15 @@ function setupUserCron(chatId) {
     userCronJobs.delete(id);
   }
 
-  const u = licenses.users[id];
+  const u = ensureUserAutoRun(id);
   if (!u || !u.autoRun || !u.autoRun.enabled || !u.autoRun.time) return;
 
   if (!hasActiveLicense(id)) return;
 
   const time = u.autoRun.time;
-  if (!/^\d{2}:\d{2}$/.test(time)) return;
-  const [hh, mm] = time.split(":");
+  const startTime = subtractMinutesFromTime(time, AUTO_PRESTART_MINUTES);
+  if (!startTime) return;
+  const [hh, mm] = startTime.split(":");
 
   const job = cron.schedule(`${mm} ${hh} * * *`, () => {
     if (!hasActiveLicense(id)) {
@@ -570,17 +701,43 @@ function setupUserCron(chatId) {
       userCronJobs.delete(id);
       return;
     }
-    
-    const result = startBot(id, {
-      dni: u.autoRun.dni || DEFAULTS.dni,
-      codigo: u.autoRun.codigo || DEFAULTS.codigo,
-      turboMode: u.autoRun.turboMode !== false
-    });
-    
-    if (result.started && telegramBotClient) {
-      telegramBotClient.sendMessage(id, "⏰ Bot iniciado automáticamente por tu tarea programada.").catch(()=>{});
-    } else if (telegramBotClient) {
-      telegramBotClient.sendMessage(id, `⏰ Falló el inicio automático: ${result.reason}`).catch(()=>{});
+
+    if (!hasAutoCredentials(u.autoRun)) {
+      if (telegramBotClient) {
+        telegramBotClient
+          .sendMessage(
+            id,
+            "⏰ No se ejecutó tu tarea automática porque faltan credenciales.\nUsa ⏰ Auto -> 🔑 Credenciales para completar DNI/Código."
+          )
+          .catch(() => {});
+      }
+      return;
+    }
+
+    const launch = () => {
+      const result = startBot(id, {
+        dni: u.autoRun.dni,
+        codigo: u.autoRun.codigo,
+        turboMode: u.autoRun.turboMode !== false
+      });
+
+      if (result.started && telegramBotClient) {
+        telegramBotClient
+          .sendMessage(
+            id,
+            `⏰ Bot iniciado automáticamente. Hora objetivo: ${u.autoRun.time} | inicio real: ${startTime} (Lima).`
+          )
+          .catch(() => {});
+      } else if (telegramBotClient) {
+        telegramBotClient.sendMessage(id, `⏰ Falló el inicio automático: ${result.reason}`).catch(() => {});
+      }
+    };
+
+    if (AUTO_START_JITTER_MAX_MS > 0) {
+      const delay = Math.floor(Math.random() * (AUTO_START_JITTER_MAX_MS + 1));
+      setTimeout(launch, delay);
+    } else {
+      launch();
     }
   }, {
     scheduled: true,
@@ -596,6 +753,42 @@ function initializeAllCrons() {
   }
 }
 
+async function notifyLicenseExpirations() {
+  if (!telegramBotClient) return;
+  const dayKey = limaDateKey();
+  const nowMs = Date.now();
+  for (const user of Object.values(licenses.users)) {
+    if (!user || !user.chatId || !user.expiresAt) continue;
+    const chatId = String(user.chatId);
+    if (isAdmin(chatId)) continue;
+    const expiresMs = new Date(user.expiresAt).getTime();
+    if (!Number.isFinite(expiresMs) || expiresMs <= nowMs) continue;
+    const daysLeft = Math.ceil((expiresMs - nowMs) / 86400000);
+    if (daysLeft < 1 || daysLeft > LICENSE_EXPIRY_REMINDER_DAYS) continue;
+    const reminderKey = `${chatId}:${daysLeft}:${dayKey}`;
+    if (sentLicenseReminderKeys.has(reminderKey)) continue;
+    sentLicenseReminderKeys.add(reminderKey);
+    if (sentLicenseReminderKeys.size > 5000) sentLicenseReminderKeys.clear();
+    await telegramBotClient
+      .sendMessage(
+        chatId,
+        `🔔 Tu licencia vence en ${daysLeft} día(s).\nRenueva con /activar CODIGO para evitar interrupciones.`,
+        { reply_markup: userKeyboard(isAdmin(chatId)) }
+      )
+      .catch(() => {});
+  }
+}
+
+function startLicenseReminderLoop() {
+  const everyMs = LICENSE_REMINDER_CHECK_MINUTES * 60 * 1000;
+  setInterval(() => {
+    notifyLicenseExpirations().catch(() => {});
+  }, everyMs);
+  setTimeout(() => {
+    notifyLicenseExpirations().catch(() => {});
+  }, 10000);
+}
+
 async function getTaskStatus() {
   return {
     exists: true,
@@ -609,16 +802,17 @@ async function getTaskStatus() {
 
 // Initialize all user crons on startup
 setTimeout(initializeAllCrons, 2000);
+startLicenseReminderLoop();
 
 function userKeyboard(isAdminUser) {
   const base = [
     ["🚀 Iniciar", "⚙️ Configurar"],
     ["📊 Estado", "🧵 Procesos", "🛑 Detener"],
-    ["🖼️ Foto", "🔐 Licencia"],
+    ["🖼️ Foto", "🔐 Licencia", "⏰ Auto"],
     ["❓ Ayuda", "🆔 Mi ID"]
   ];
   if (isAdminUser) {
-    base.push(["🛠️ Admin", "📋 Licencias", "🧹 Limpiar", "⏰ Auto"]);
+    base.push(["🛠️ Admin", "📋 Licencias", "🧹 Limpiar"]);
   }
   return { keyboard: base, resize_keyboard: true };
 }
@@ -639,6 +833,8 @@ function helpText(isAdminUser) {
     "/mis_procesos - Ver tus procesos activos",
     "/iniciar [dni] [codigo] [turbo|normal] - Inicio rápido",
     "/config_iniciar - Inicio guiado paso a paso",
+    "/menu_tarea - Configurar automático diario",
+    "/diagnostico - Estado técnico resumido",
     "/detener - Detener tus procesos activos",
     "/foto - Última captura",
     "Mientras corre verás al bot en 'escribiendo...' y un mensaje de '⏳ Procesando...'.",
@@ -669,12 +865,23 @@ async function sendStatus(bot, chatId) {
   const ownJobs = listRunningJobs(chatId);
   const latestOwnExit = lastExitsByChat.get(String(chatId));
   const ownJobPids = ownJobs.slice(0, 5).map((j) => `${j.pid}`).join(", ");
-  
+
   const licenseText = licenseStatusText(chatId);
   const licenseEmoji = licenseText.includes("❌") ? "❌" : "✅";
 
-  const u = licenses.users[String(chatId)];
-  const auto = u && u.autoRun ? u.autoRun : { enabled: false, time: "-" };
+  const u = ensureUserAutoRun(chatId);
+  const auto = u.autoRun;
+  const startAt = subtractMinutesFromTime(auto.time, AUTO_PRESTART_MINUTES) || "-";
+  const nextRun = auto.enabled ? nextAutoRunLabel(auto.time) : "-";
+  const credentialsOk = hasAutoCredentials(auto);
+  const ownLastExit = describeLastExit(latestOwnExit);
+  const recommendation = !hasActiveLicense(chatId)
+    ? "🔐 Activa licencia con /activar CODIGO."
+    : auto.enabled && !credentialsOk
+    ? "⚠️ Completa DNI/Código en ⏰ Auto para que corra diario."
+    : ownJobs.length > 0
+    ? "⏳ Tu bot está trabajando ahora."
+    : "✅ Todo listo para iniciar.";
 
   const lines = [
     "📊 *Estado del Sistema*",
@@ -684,17 +891,62 @@ async function sendStatus(bot, chatId) {
     `*Tus PIDs activos:* ${compact(ownJobPids || "Ninguno")}`,
     "",
     "⏱️ *Última Ejecución*",
-    `*Cierre:* ${latestOwnExit ? `${latestOwnExit.at}` : "Nunca"}`,
-    `*Código:* ${latestOwnExit ? latestOwnExit.code : "-"}`,
+    `*Resultado:* ${ownLastExit}`,
     "",
     "⚙️ *Tu Tarea Automática*",
     `*Estado:* ${auto.enabled ? "✅ Habilitada" : "❌ Deshabilitada"}`,
-    `*Hora:* ${auto.time}`,
+    `*Hora objetivo:* ${auto.time}`,
+    `*Inicio real:* ${startAt} (Lima)`,
+    `*Próxima ejecución:* ${nextRun}`,
+    `*Credenciales:* ${credentialsOk ? "✅ Configuradas" : "❌ Faltan DNI/Código"}`,
     "",
     `${licenseEmoji} *Licencia*`,
     licenseText,
+    "",
+    `*Siguiente paso:* ${recommendation}`,
   ];
   await bot.sendMessage(chatId, lines.join("\n"), { parse_mode: "Markdown", reply_markup: userKeyboard(isAdmin(chatId)) });
+}
+
+async function sendDiagnostics(bot, chatId) {
+  const isAdminUser = isAdmin(chatId);
+  const ownJobs = listRunningJobs(chatId);
+  const ownLastExit = lastExitsByChat.get(String(chatId));
+  const user = ensureUserAutoRun(chatId);
+  const auto = user.autoRun;
+  const startAt = subtractMinutesFromTime(auto.time, AUTO_PRESTART_MINUTES) || "-";
+  const nextRun = auto.enabled ? nextAutoRunLabel(auto.time) : "-";
+  const duplicateDetected = Date.now() - lastDuplicatePollingAlertMs < 6 * 60 * 60 * 1000;
+  const lines = [
+    "🩺 *Diagnóstico rápido*",
+    "───────────────",
+    `*Node:* ${process.version}`,
+    `*Plataforma:* ${process.platform}`,
+    `*Jobs globales:* ${runningJobs.size}/${MAX_PARALLEL_JOBS}`,
+    `*Tus jobs:* ${ownJobs.length}/${MAX_PARALLEL_JOBS_PER_CHAT}`,
+    `*Crons activos:* ${userCronJobs.size}`,
+    `*Último resultado:* ${describeLastExit(ownLastExit)}`,
+    "",
+    "⚙️ *Automático*",
+    `*Estado:* ${auto.enabled ? "ON" : "OFF"}`,
+    `*Hora objetivo:* ${auto.time}`,
+    `*Inicio real:* ${startAt} (Lima)`,
+    `*Próxima ejecución:* ${nextRun}`,
+    `*Credenciales:* ${hasAutoCredentials(auto) ? "OK" : "FALTAN"}`,
+    `*Pre-arranque:* ${AUTO_PRESTART_MINUTES} minuto(s)`,
+    `*Jitter:* ${AUTO_START_JITTER_MAX_MS} ms`,
+    "",
+    `*Conflicto 409 reciente:* ${duplicateDetected ? "Sí" : "No"}`,
+  ];
+  if (isAdminUser) {
+    lines.push(
+      "",
+      "👑 *Admin*",
+      `*Panel:* ${panelPublicUrl()}`,
+      `*Admin chat_id:* ${adminChatId() || "-"}`,
+    );
+  }
+  await bot.sendMessage(chatId, lines.join("\n"), { parse_mode: "Markdown", reply_markup: userKeyboard(isAdminUser) });
 }
 
 async function sendOwnJobs(bot, chatId) {
@@ -791,16 +1043,18 @@ async function handleFlowInput(bot, msg) {
       return true;
     }
     clearFlow(chatId);
-    
-    const id = String(chatId);
-    const u = licenses.users[id];
-    if (u && u.autoRun) {
-      u.autoRun.time = time;
-      saveState();
-      setupUserCron(chatId);
-    }
-    
-    await bot.sendMessage(chatId, `✅ Hora actualizada a las ${time} (Perú).\nAsegúrate de habilitar la tarea usando el menú ⏰ Auto.`, { reply_markup: userKeyboard(admin) });
+
+    const u = ensureUserAutoRun(chatId);
+    u.autoRun.time = time;
+    saveState();
+    setupUserCron(chatId);
+
+    const startAt = subtractMinutesFromTime(time, AUTO_PRESTART_MINUTES) || time;
+    await bot.sendMessage(
+      chatId,
+      `✅ Hora objetivo actualizada a ${time} (Perú).\nEl bot arrancará a las ${startAt} (pre-arranque ${AUTO_PRESTART_MINUTES} min).`,
+      { reply_markup: userKeyboard(admin) }
+    );
     return true;
   }
 
@@ -824,14 +1078,11 @@ async function handleFlowInput(bot, msg) {
         return true;
       }
       clearFlow(chatId);
-      const id = String(chatId);
-      const u = licenses.users[id];
-      if (u && u.autoRun) {
-        u.autoRun.dni = flow.data.dni;
-        u.autoRun.codigo = codigo;
-        saveState();
-        setupUserCron(chatId);
-      }
+      const u = ensureUserAutoRun(chatId);
+      u.autoRun.dni = flow.data.dni;
+      u.autoRun.codigo = codigo;
+      saveState();
+      setupUserCron(chatId);
       await bot.sendMessage(chatId, `✅ Credenciales guardadas. DNI: ${flow.data.dni}, Código: ${codigo}`, { reply_markup: userKeyboard(admin) });
       return true;
     }
@@ -940,11 +1191,15 @@ async function onCommand(bot, msg, command, args) {
 
   if (command === "/start" || command === "/menu") {
     clearFlow(chatId);
+    const onboarding = hasActiveLicense(chatId)
+      ? "✅ Ya puedes usar 🚀 Iniciar o configurar tu automático en ⏰ Auto."
+      : "🔐 Para comenzar: usa /activar y pega tu código de licencia.";
     const welcome = [
       "👋 *Bienvenido al bot Charola*",
       "─────────────────",
       licenseStatusText(chatId),
       admin ? "👑 _Modo administrador habilitado_" : "",
+      onboarding,
       "",
       "👇 *Selecciona una opción del menú inferior*",
       "_O escribe /help para ver todos los comandos._",
@@ -961,24 +1216,9 @@ async function onCommand(bot, msg, command, args) {
       await bot.sendMessage(chatId, "No tienes licencia activa.");
       return;
     }
-    const id = String(chatId);
-    const u = licenses.users[id] || { chatId: id };
-    if (!u.autoRun) u.autoRun = { enabled: false, time: "07:00", dni: "", codigo: "", turboMode: true };
-    licenses.users[id] = u;
+    ensureUserAutoRun(chatId);
     saveState();
-
-    const txt = `⚙️ *Tarea Automática (Diaria)*\n───────────────\n*Estado:* ${u.autoRun.enabled ? "✅ Habilitada" : "❌ Deshabilitada"}\n*Hora:* ${u.autoRun.time}\n*DNI:* ${u.autoRun.dni || "No configurado"}\n*Modo:* ${u.autoRun.turboMode ? "⚡ TURBO" : "🐢 NORMAL"}\n\nSelecciona una acción:`;
-    const opts = {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: u.autoRun.enabled ? "❌ Deshabilitar" : "✅ Habilitar", callback_data: u.autoRun.enabled ? "cron_disable" : "cron_enable" }],
-          [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }, { text: "🔑 Credenciales", callback_data: "cron_credentials" }],
-          [{ text: "⚡ Modo: " + (u.autoRun.turboMode ? "TURBO" : "NORMAL"), callback_data: "cron_mode" }]
-        ]
-      }
-    };
-    await bot.sendMessage(chatId, txt, opts);
+    await renderAutoMenu(bot, chatId);
     return;
   }
 
@@ -1026,6 +1266,15 @@ async function onCommand(bot, msg, command, args) {
       return;
     }
     await sendStatus(bot, chatId);
+    return;
+  }
+
+  if (command === "/diagnostico") {
+    if (!access.ok && !admin) {
+      await bot.sendMessage(chatId, access.message, { reply_markup: userKeyboard(admin) });
+      return;
+    }
+    await sendDiagnostics(bot, chatId);
     return;
   }
 
@@ -1305,9 +1554,11 @@ bot
     { command: "start", description: "Abrir menú" },
     { command: "menu", description: "Mostrar botones" },
     { command: "status", description: "Ver estado" },
+    { command: "diagnostico", description: "Ver diagnóstico rápido" },
     { command: "mis_procesos", description: "Ver procesos activos" },
     { command: "iniciar", description: "Iniciar rápido" },
     { command: "config_iniciar", description: "Iniciar paso a paso" },
+    { command: "menu_tarea", description: "Configurar automático" },
     { command: "detener", description: "Detener tus procesos" },
     { command: "limpiar_capturas", description: "Borrar capturas (admin)" },
     { command: "mi_licencia", description: "Estado de licencia" },
@@ -1373,31 +1624,43 @@ bot.on("message", async (msg) => {
 
 
 bot.on("callback_query", async (query) => {
+  if (!query.message || !query.message.chat) {
+    await bot.answerCallbackQuery(query.id, { text: "No se pudo procesar el botón." }).catch(() => {});
+    return;
+  }
   const chatId = query.message.chat.id;
   if (!hasActiveLicense(chatId)) return bot.answerCallbackQuery(query.id, { text: "No tienes licencia activa.", show_alert: true });
 
   const data = query.data;
-  const u = licenses.users[String(chatId)];
-  if (!u) return bot.answerCallbackQuery(query.id, { text: "Error al leer perfil." });
-  if (!u.autoRun) u.autoRun = { enabled: false, time: "07:00", dni: "", codigo: "", turboMode: true };
+  const u = ensureUserAutoRun(chatId);
 
   try {
     if (data === "cron_enable") {
+      if (!hasAutoCredentials(u.autoRun)) {
+        await bot.answerCallbackQuery(query.id, { text: "Primero configura DNI/Código.", show_alert: true });
+        await bot.sendMessage(chatId, "Antes de habilitar automático, configura tus credenciales en ⏰ Auto -> 🔑 Credenciales.");
+        await renderAutoMenu(bot, chatId, query.message.message_id);
+        return;
+      }
       u.autoRun.enabled = true;
       saveState();
       setupUserCron(chatId);
       await bot.answerCallbackQuery(query.id, { text: "Tarea habilitada." });
-      await bot.sendMessage(chatId, "✅ Tu tarea automática fue ENCENDIDA.");
+      await renderAutoMenu(bot, chatId, query.message.message_id);
     } else if (data === "cron_disable") {
       u.autoRun.enabled = false;
       saveState();
       setupUserCron(chatId);
       await bot.answerCallbackQuery(query.id, { text: "Tarea deshabilitada." });
-      await bot.sendMessage(chatId, "❌ Tu tarea automática fue APAGADA.");
+      await renderAutoMenu(bot, chatId, query.message.message_id);
     } else if (data === "cron_time") {
       setFlow(chatId, { type: "cron_time", step: "time" });
       await bot.answerCallbackQuery(query.id);
-      await bot.sendMessage(chatId, "Envíame la nueva hora objetivo en formato HH:mm (ejemplo: 07:00). El bot arrancará 3 minutos antes.", { reply_markup: cancelKeyboard() });
+      await bot.sendMessage(
+        chatId,
+        `Envíame la nueva hora objetivo en formato HH:mm (ejemplo: 07:00). El bot arrancará ${AUTO_PRESTART_MINUTES} minutos antes.`,
+        { reply_markup: cancelKeyboard() }
+      );
     } else if (data === "cron_credentials") {
       setFlow(chatId, { type: "cron_credentials", step: "dni", data: {} });
       await bot.answerCallbackQuery(query.id);
@@ -1406,7 +1669,31 @@ bot.on("callback_query", async (query) => {
       u.autoRun.turboMode = !u.autoRun.turboMode;
       saveState();
       await bot.answerCallbackQuery(query.id, { text: `Modo cambiado a ${u.autoRun.turboMode ? "TURBO" : "NORMAL"}` });
-      await bot.sendMessage(chatId, `✅ Modo automático cambiado a: ${u.autoRun.turboMode ? "⚡ TURBO" : "🐢 NORMAL"}`);
+      await renderAutoMenu(bot, chatId, query.message.message_id);
+    } else if (data === "cron_run_now") {
+      if (!hasAutoCredentials(u.autoRun)) {
+        await bot.answerCallbackQuery(query.id, { text: "Faltan credenciales.", show_alert: true });
+        await bot.sendMessage(chatId, "Configura primero DNI/Código en ⏰ Auto -> 🔑 Credenciales.");
+        return;
+      }
+      const result = startBot(chatId, {
+        dni: u.autoRun.dni,
+        codigo: u.autoRun.codigo,
+        turboMode: u.autoRun.turboMode !== false,
+        maxAttempts: DEFAULTS.maxAttempts,
+        retryDelayMs: DEFAULTS.retryDelayMs,
+      });
+      if (!result.started) {
+        await bot.answerCallbackQuery(query.id, { text: "No se pudo iniciar.", show_alert: true });
+        await bot.sendMessage(chatId, `No se pudo iniciar la prueba automática: ${result.reason}`);
+        return;
+      }
+      await bot.answerCallbackQuery(query.id, { text: "Prueba iniciada." });
+      await bot.sendMessage(
+        chatId,
+        `▶️ Prueba automática iniciada.\nJob: ${result.jobId}\nPID: ${result.pid}\nModo: ${u.autoRun.turboMode ? "TURBO" : "NORMAL"}`
+      );
+      await renderAutoMenu(bot, chatId, query.message.message_id);
     }
   } catch (err) {
     console.error(err);
@@ -1415,6 +1702,23 @@ bot.on("callback_query", async (query) => {
 bot.on("polling_error", (error) => {
   const message = String(error && error.message ? error.message : error);
   console.error("Polling error:", message);
+  if (/409|terminated by other getUpdates request/i.test(message)) {
+    const now = Date.now();
+    if (now - lastDuplicatePollingAlertMs > 10 * 60 * 1000) {
+      lastDuplicatePollingAlertMs = now;
+      const adminId = adminChatId();
+      if (adminId && telegramBotClient) {
+        telegramBotClient
+          .sendMessage(
+            adminId,
+            "⚠️ Detecté conflicto 409 de Telegram: hay otra instancia usando el mismo token.\nApaga la otra instancia o reinicia PM2 del servidor correcto."
+          )
+          .catch(() => {});
+      }
+    }
+    schedulePollingRestart("duplicate-instance");
+    return;
+  }
   if (/(ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|ECONNREFUSED|429|502|503|504|network)/i.test(message)) {
     schedulePollingRestart("network");
   }
