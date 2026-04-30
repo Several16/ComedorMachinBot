@@ -589,7 +589,7 @@ async function getTaskStatus() {
   return {
     exists: !!currentCronTime && currentCronTime !== "-",
     state: settings.cronEnabled !== false ? "Habilitado" : "Deshabilitado",
-    nextRun: activeCronJob ? "Hoy a las " + currentCronTime : "-",
+    nextRun: activeCronJob ? "A las " + currentCronTime : "-",
     lastRun: "-",
     lastResult: "-",
     taskState: activeCronJob ? "Corriendo en Node (Linux)" : "Detenido",
@@ -635,7 +635,7 @@ function userKeyboard(isAdminUser) {
     ["❓ Ayuda", "🆔 Mi ID"]
   ];
   if (isAdminUser) {
-    base.push(["🛠️ Admin", "📋 Licencias", "🧹 Limpiar"]);
+    base.push(["🛠️ Admin", "📋 Licencias", "🧹 Limpiar", "⏰ Auto"]);
   }
   return { keyboard: base, resize_keyboard: true };
 }
@@ -702,7 +702,7 @@ async function sendStatus(bot, chatId) {
     `*Cierre:* ${latestOwnExit ? `${latestOwnExit.at}` : "Nunca"}`,
     `*Código:* ${latestOwnExit ? latestOwnExit.code : "-"}`,
     "",
-    "⚙️ *Tarea Programada Windows*",
+    "⚙️ *Tarea Automática*",
     `*Estado:* ${compact(task.state || task.taskState)}`,
     `*Próxima:* ${compact(task.nextRun)}`,
     `*Resultado:* ${compact(task.lastResult)}`,
@@ -798,6 +798,23 @@ async function handleFlowInput(bot, msg) {
   }
 
   if (text.startsWith("/")) return false;
+
+  
+  if (flow.type === "cron_time") {
+    const time = text.trim();
+    if (!/^\d{2}:\d{2}$/.test(time)) {
+      await bot.sendMessage(chatId, "Formato inválido. Usa HH:mm (ejemplo 07:00).", { reply_markup: cancelKeyboard() });
+      return true;
+    }
+    clearFlow(chatId);
+    const r = await ensureTaskAt(time);
+    if (!r.ok) {
+      await bot.sendMessage(chatId, `Error: ${r.stderr}`, { reply_markup: userKeyboard(admin) });
+      return true;
+    }
+    await bot.sendMessage(chatId, `✅ Hora actualizada a las ${time} (Perú).\nAsegúrate de habilitar la tarea usando el menú ⏰ Auto.`, { reply_markup: userKeyboard(admin) });
+    return true;
+  }
 
   if (flow.type === "activate_code") {
     const result = activateCode(chatId, text);
@@ -914,6 +931,25 @@ async function onCommand(bot, msg, command, args) {
       .filter(Boolean)
       .join("\n");
     await bot.sendMessage(chatId, welcome, { parse_mode: "Markdown", reply_markup: userKeyboard(admin) });
+    return;
+  }
+
+  
+  if (command === "/menu_tarea") {
+    if (!adminRequired(chatId)) return;
+    const task = await getTaskStatus();
+    const txt = `⚙️ *Tarea Automática (Diaria)*\n───────────────\n*Estado:* ${task.state}\n*Hora:* ${currentCronTime || "No configurada"}\n*Plataforma:* ${task.taskState}\n\nSelecciona una acción:`;
+    const opts = {
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "✅ Habilitar", callback_data: "cron_enable" }, { text: "❌ Deshabilitar", callback_data: "cron_disable" }],
+          [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }],
+          [{ text: "▶️ Ejecutar Ahora", callback_data: "cron_run" }]
+        ]
+      }
+    };
+    await bot.sendMessage(chatId, txt, opts);
     return;
   }
 
@@ -1212,6 +1248,7 @@ function normalizeIncomingCommand(msg) {
     "🛠️ Admin": "/admin",
     "📋 Licencias": "/licencias",
     "🧹 Limpiar": "/limpiar_capturas",
+    "⏰ Auto": "/menu_tarea",
     "❌ Cancelar": "/cancel",
   };
   return mapping[t] || t;
@@ -1303,6 +1340,34 @@ bot.on("message", async (msg) => {
       await bot.sendMessage(msg.chat.id, `Error: ${error.message}`);
     } catch {}
   });
+});
+
+
+bot.on("callback_query", async (query) => {
+  const chatId = query.message.chat.id;
+  if (!isAdmin(chatId)) return bot.answerCallbackQuery(query.id, { text: "No autorizado.", show_alert: true });
+  
+  const data = query.data;
+  try {
+    if (data === "cron_enable") {
+      await runTaskCommand(["/Change", "", "", "/ENABLE"]);
+      await bot.answerCallbackQuery(query.id, { text: "Tarea habilitada." });
+      await bot.sendMessage(chatId, "✅ Tarea automática habilitada.");
+    } else if (data === "cron_disable") {
+      await runTaskCommand(["/Change", "", "", "/DISABLE"]);
+      await bot.answerCallbackQuery(query.id, { text: "Tarea deshabilitada." });
+      await bot.sendMessage(chatId, "❌ Tarea automática deshabilitada.");
+    } else if (data === "cron_run") {
+      await bot.answerCallbackQuery(query.id, { text: "Iniciando proceso..." });
+      await runTaskCommand(["/Run"]);
+    } else if (data === "cron_time") {
+      setFlow(chatId, { type: "cron_time", step: "time" });
+      await bot.answerCallbackQuery(query.id);
+      await bot.sendMessage(chatId, "Envíame la nueva hora en formato HH:mm (ejemplo: 07:00).", { reply_markup: cancelKeyboard() });
+    }
+  } catch (err) {
+    console.error(err);
+  }
 });
 
 bot.on("polling_error", (error) => {
