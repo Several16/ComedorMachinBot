@@ -535,11 +535,11 @@ function startBot(chatId, config) {
     };
   }
   const env = { ...process.env };
-  env.CHAROLA_DNI = String(config.dni || DEFAULTS.dni);
-  env.CHAROLA_CODIGO = String(config.codigo || DEFAULTS.codigo);
+  env.CHAROLA_DNI = String(config.dni || "");
+  env.CHAROLA_CODIGO = String(config.codigo || "");
   env.CHAROLA_MAX_ATTEMPTS = String(safeNumber(config.maxAttempts, DEFAULTS.maxAttempts));
   env.CHAROLA_RETRY_DELAY_MS = String(safeNumber(config.retryDelayMs, DEFAULTS.retryDelayMs));
-  env.CHAROLA_AFTER_SUBMIT_WAIT_MS = String(safeNumber(config.afterSubmitWaitMs, 1200));
+  env.CHAROLA_AFTER_SUBMIT_WAIT_MS = String(safeNumber(config.afterSubmitWaitMs, 6000));
   env.CHAROLA_TURBO_MODE = config.turboMode === false ? "false" : "true";
   env.CHAROLA_HEADLESS = config.headless === false ? "false" : "true";
 
@@ -1145,8 +1145,8 @@ async function handleFlowInput(bot, msg) {
         });
         return true;
       }
-      const dni = flow.data.dni || DEFAULTS.dni;
-      const codigo = flow.data.codigo || DEFAULTS.codigo;
+      const dni = flow.data.dni || "";
+      const codigo = flow.data.codigo || "";
       clearFlow(chatId);
       const result = startBot(chatId, {
         dni,
@@ -1301,19 +1301,32 @@ async function onCommand(bot, msg, command, args) {
       await bot.sendMessage(chatId, access.message);
       return;
     }
+    const u = ensureUserAutoRun(chatId);
+    let dni, codigo, turboMode;
+
     if (args.length === 1) {
       await bot.sendMessage(chatId, "Uso: /iniciar [dni] [codigo] [turbo|normal]\nO usa ⚙️ Configurar inicio.", {
         reply_markup: userKeyboard(admin),
       });
       return;
     }
-    let dni = DEFAULTS.dni;
-    let codigo = DEFAULTS.codigo;
-    let turboMode = DEFAULTS.turboMode;
-    if (args.length >= 2) [dni, codigo] = args;
-    if (args.length >= 3) {
-      if (args[2].toLowerCase() === "normal") turboMode = false;
-      if (args[2].toLowerCase() === "turbo") turboMode = true;
+
+    if (args.length >= 2) {
+      [dni, codigo] = args;
+      turboMode = DEFAULTS.turboMode;
+      if (args.length >= 3) {
+        if (args[2].toLowerCase() === "normal") turboMode = false;
+        if (args[2].toLowerCase() === "turbo") true; // Typo fix
+        if (args[2].toLowerCase() === "turbo") turboMode = true;
+      }
+    } else {
+      if (!hasAutoCredentials(u.autoRun)) {
+        await bot.sendMessage(chatId, "❌ No tienes credenciales guardadas.\nPor favor, usa ⚙️ Configurar, o ve a ⏰ Auto -> 🔑 Credenciales.", { reply_markup: userKeyboard(admin) });
+        return;
+      }
+      dni = u.autoRun.dni;
+      codigo = u.autoRun.codigo;
+      turboMode = u.autoRun.turboMode !== false;
     }
     const result = startBot(chatId, {
       dni,
