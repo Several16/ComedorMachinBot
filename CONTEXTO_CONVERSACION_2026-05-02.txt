@@ -1,0 +1,22 @@
+CONTEXTO GUARDADO - SESIÓN 2026-05-02
+
+OBJETIVOS LOGRADOS EN ESTA SESIÓN:
+1. DIAGNÓSTICO DEL FALLO A LAS 7:00 AM (ADMIN VS USER):
+   - Problema reportado: A las 7:00 AM, usando la función Auto, el bot del administrador arrojaba "⛔ Error de datos (fatal)" mientras que el bot de un usuario normal sí conseguía el cupo. Además, al probar manualmente a las 7:56 AM, el Admin sí conseguía cupo.
+   - Causa raíz 1 (Ansiedad del bot): Con múltiples usuarios conectados a las 7:00 AM, el servidor de la UNCP se volvía lento. El bot hacía clic en "Generar Ticket" pero solo esperaba 1.2 segundos (`CHAROLA_AFTER_SUBMIT_WAIT_MS`). Al no ver respuesta inmediata, el bot recargaba la página e intentaba de nuevo. Para ese segundo intento, la universidad (que sí había procesado el primer clic lento) respondía "TICKET YA UTILIZADO", lo cual el bot interpretaba como un error fatal y se cerraba.
+   - Causa raíz 2 (La mentira de la base de datos): Debido al alto tráfico a las 7:00 AM, la base de datos de la universidad "parpadeaba" y a veces arrojaba el mensaje "USUARIO NO ENCONTRADO" o "NO MATRICULADO". El código de `charola-auto.js` tenía estos mensajes clasificados en `FATAL_MESSAGES`, haciendo que el bot se rindiera inmediatamente en lugar de reintentar.
+
+2. SOLUCIONES APLICADAS PARA SOPORTE MULTI-USUARIO CONCURRENTE:
+   - Se aumentó `CHAROLA_AFTER_SUBMIT_WAIT_MS` de 1200ms a 6000ms en `telegram-bot.js`. Esto le da al bot la paciencia necesaria para esperar la respuesta de la universidad cuando hay lag por tráfico alto, evitando que recargue la página prematuramente.
+   - Se movieron los mensajes "USUARIO NO ENCONTRADO" y "NO MATRICULADO" de `FATAL_MESSAGES` a `RETRY_MESSAGES` en `charola-auto.js`. Ahora, si la base de datos de la universidad colapsa por un instante, el bot no se rinde y vuelve a intentar hasta conseguir el cupo.
+
+3. CORRECCIÓN DE VULNERABILIDAD DE CREDENCIALES:
+   - Problema reportado: Un usuario logró sacar un ticket con los datos del administrador simplemente presionando el botón "🚀 Iniciar" sin haber configurado sus propios datos.
+   - Solución: Se modificó la lógica del comando `/iniciar` en `telegram-bot.js`. Se eliminó el uso de `DEFAULTS.dni` y `DEFAULTS.codigo` como comodines cuando el usuario no provee argumentos. Ahora, el bot exige que el usuario tenga sus propias credenciales guardadas en `u.autoRun`. Si no las tiene, envía un mensaje de error y detiene la ejecución.
+
+4. GESTIÓN DE REPOSITORIO:
+   - Los cambios fueron commiteados y pusheados al repositorio de GitHub (https://github.com/Several16/ComedorMachinBot) bajo el mensaje "Fix: Prevenir filtración de credenciales admin, aumentar timeout de servidor y reintentar si DB laggea".
+   - Se creó un backup completo local en la carpeta `comedor-bot-telegram-backup`.
+
+ESTADO ACTUAL:
+El bot es ahora robusto, seguro y capaz de manejar a múltiples usuarios (ej. 20 usuarios) ejecutando la tarea programada exactamente a las 7:00 AM sin fallar por culpa del lag del servidor de la UNCP. Las credenciales del administrador están protegidas contra uso accidental por terceros.
