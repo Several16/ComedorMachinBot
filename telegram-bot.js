@@ -1886,14 +1886,21 @@ function killZombies() {
   }
 }
 
-process.on("SIGINT", () => {
+async function gracefulShutdown(signal) {
+  console.log(`Recibido ${signal}, cerrando conexiones...`);
   killZombies();
+  try {
+    console.log("Deteniendo polling de Telegram...");
+    await bot.stopPolling();
+    console.log("Polling de Telegram detenido correctamente.");
+  } catch (err) {
+    console.error("Error al detener polling:", err.message);
+  }
   process.exit(0);
-});
-process.on("SIGTERM", () => {
-  killZombies();
-  process.exit(0);
-});
+}
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 
 startPolling("startup").catch((error) => {
   console.error("Error iniciando polling:", error.message);
