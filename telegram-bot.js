@@ -35,8 +35,8 @@ const DEFAULTS = {
   retryDelayMs: Number(process.env.CHAROLA_RETRY_DELAY_MS || 800),
   turboMode: process.env.CHAROLA_TURBO_MODE !== "false",
 };
-const MAX_PARALLEL_JOBS = Math.max(1, safeNumber(process.env.CHAROLA_MAX_PARALLEL_JOBS, 20));
-const MAX_PARALLEL_JOBS_PER_CHAT = Math.max(1, safeNumber(process.env.CHAROLA_MAX_PARALLEL_JOBS_PER_CHAT, 15));
+const MAX_PARALLEL_JOBS = Math.max(1, safeNumber(process.env.CHAROLA_MAX_PARALLEL_JOBS, 60));
+const MAX_PARALLEL_JOBS_PER_CHAT = Math.max(1, safeNumber(process.env.CHAROLA_MAX_PARALLEL_JOBS_PER_CHAT, 30));
 const LOADING_ACTION_INTERVAL_MS = Math.max(2000, safeNumber(process.env.CHAROLA_LOADING_ACTION_INTERVAL_MS, 4000));
 const NOTIFY_JOB_FINISH = process.env.CHAROLA_NOTIFY_ON_FINISH !== "false";
 const AUTO_PRESTART_MINUTES = Math.max(0, Math.min(59, safeNumber(process.env.CHAROLA_AUTO_PRESTART_MINUTES, 3)));
@@ -645,7 +645,7 @@ function getAutoMenuPayload(chatId) {
     `*Hora objetivo:* ${auto.time}`,
     `*Inicio real:* ${startAt} (Lima)`,
     `*Próxima ejecución:* ${auto.enabled ? nextAutoRunLabel(auto.time) : "-"}`,
-    `*Credenciales:* ${credentialsOk ? "✅ Configuradas" : "❌ Faltan DNI/Código"}`,
+    `*Cuentas registradas:* ${Array.isArray(auto.accounts) ? auto.accounts.length : 0} cuenta(s)`, // Cambiado de Credenciales
     `*Modo:* ${auto.turboMode ? "⚡ TURBO" : "🐢 NORMAL"}`,
     "",
     "Selecciona una acción:",
@@ -658,7 +658,8 @@ function getAutoMenuPayload(chatId) {
           { text: auto.enabled ? "❌ Deshabilitar" : "✅ Habilitar", callback_data: auto.enabled ? "cron_disable" : "cron_enable" },
           { text: "▶️ Probar ahora", callback_data: "cron_run_now" },
         ],
-        [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }, { text: "🔑 Credenciales", callback_data: "cron_credentials" }],
+        [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }, { text: "➕ Añadir Cuenta", callback_data: "cron_credentials" }],
+        [{ text: "📋 Ver Cuentas", callback_data: "cron_view_accounts" }, { text: "🗑️ Limpiar Cuentas", callback_data: "cron_clear_accounts" }],
         [{ text: `⚡ Modo: ${auto.turboMode ? "TURBO" : "NORMAL"}`, callback_data: "cron_mode" }],
       ],
     },
@@ -707,7 +708,7 @@ function setupUserCron(chatId) {
         telegramBotClient
           .sendMessage(
             id,
-            "⏰ No se ejecutó tu tarea automática porque faltan credenciales.\nUsa ⏰ Auto -> 🔑 Credenciales para completar DNI/Código."
+            "⏰ No se ejecutó tu tarea automática porque faltan credenciales.\nUsa ⏰ Auto -> ➕ Añadir Cuenta para registrar al menos una cuenta."
           )
           .catch(() => {});
       }
@@ -898,7 +899,7 @@ async function sendStatus(bot, chatId) {
     `*Hora objetivo:* ${auto.time}`,
     `*Inicio real:* ${startAt} (Lima)`,
     `*Próxima ejecución:* ${nextRun}`,
-    `*Credenciales:* ${credentialsOk ? "✅ Configuradas" : "❌ Faltan DNI/Código"}`,
+    `*Cuentas:* ${credentialsOk ? `${(auto.accounts || []).length} registradas` : "❌ Faltan cuentas"}`,
     "",
     `${licenseEmoji} *Licencia*`,
     licenseText,
@@ -932,7 +933,7 @@ async function sendDiagnostics(bot, chatId) {
     `*Hora objetivo:* ${auto.time}`,
     `*Inicio real:* ${startAt} (Lima)`,
     `*Próxima ejecución:* ${nextRun}`,
-    `*Credenciales:* ${hasAutoCredentials(auto) ? "OK" : "FALTAN"}`,
+    `*Cuentas:* ${hasAutoCredentials(auto) ? (auto.accounts || []).length : "0"}`,
     `*Pre-arranque:* ${AUTO_PRESTART_MINUTES} minuto(s)`,
     `*Jitter:* ${AUTO_START_JITTER_MAX_MS} ms`,
     "",
@@ -1651,7 +1652,7 @@ bot.on("callback_query", async (query) => {
     if (data === "cron_enable") {
       if (!hasAutoCredentials(u.autoRun)) {
         await bot.answerCallbackQuery(query.id, { text: "Primero configura DNI/Código.", show_alert: true });
-        await bot.sendMessage(chatId, "Antes de habilitar automático, configura tus credenciales en ⏰ Auto -> 🔑 Credenciales.");
+        await bot.sendMessage(chatId, "Antes de habilitar automático, añade una cuenta en ⏰ Auto -> ➕ Añadir Cuenta.");
         await renderAutoMenu(bot, chatId, query.message.message_id);
         return;
       }
@@ -1678,6 +1679,20 @@ bot.on("callback_query", async (query) => {
       setFlow(chatId, { type: "cron_credentials", step: "dni", data: {} });
       await bot.answerCallbackQuery(query.id);
       await bot.sendMessage(chatId, "Vamos a configurar tus datos automáticos.\n1/2 Envíame tu DNI (solo números).", { reply_markup: cancelKeyboard() });
+    } else if (data === "cron_view_accounts") {
+      const accs = u.autoRun.accounts || [];
+      if (!accs.length) {
+        await bot.answerCallbackQuery(query.id, { text: "No hay cuentas registradas.", show_alert: true });
+        return;
+      }
+      const list = accs.map((a, i) => `${i + 1}. DNI: ${a.dni}`).join("\n");
+      await bot.answerCallbackQuery(query.id);
+      await bot.sendMessage(chatId, `📋 *Tus cuentas registradas:*\n\n${list}`, { parse_mode: "Markdown" });
+    } else if (data === "cron_clear_accounts") {
+      u.autoRun.accounts = [];
+      saveState();
+      await bot.answerCallbackQuery(query.id, { text: "Todas las cuentas eliminadas.", show_alert: true });
+      await renderAutoMenu(bot, chatId, query.message.message_id);
     } else if (data === "cron_mode") {
       u.autoRun.turboMode = !u.autoRun.turboMode;
       saveState();
