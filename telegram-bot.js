@@ -1080,11 +1080,11 @@ async function handleFlowInput(bot, msg) {
       }
       clearFlow(chatId);
       const u = ensureUserAutoRun(chatId);
-      u.autoRun.dni = flow.data.dni;
-      u.autoRun.codigo = codigo;
+      if (!Array.isArray(u.autoRun.accounts)) u.autoRun.accounts = [];
+      u.autoRun.accounts.push({ dni: flow.data.dni, codigo });
       saveState();
       setupUserCron(chatId);
-      await bot.sendMessage(chatId, `✅ Credenciales guardadas. DNI: ${flow.data.dni}, Código: ${codigo}`, { reply_markup: userKeyboard(admin) });
+      await bot.sendMessage(chatId, `✅ Cuenta añadida. DNI: ${flow.data.dni}. Total cuentas: ${u.autoRun.accounts.length}`, { reply_markup: userKeyboard(admin) });
       return true;
     }
   }
