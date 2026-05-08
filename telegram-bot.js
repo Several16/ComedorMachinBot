@@ -497,10 +497,11 @@ async function notifyJobFinished(exitInfo) {
   const lines = [
     `🔔 *Reporte de Ejecución*`,
     `───────────────`,
+    `*DNI:* \`${exitInfo.dni || "Desconocido"}\``,
     `*Estado:* ${label}`,
     `*Job ID:* \`${jobId}\``,
     `*PID:* ${pid}`,
-    `*Código:* ${code}`,
+    `*Código interno:* ${code}`,
     `*Hora:* ${exitInfo.at}`
   ];
   try {
@@ -508,7 +509,7 @@ async function notifyJobFinished(exitInfo) {
     const preferredImage = artifacts.qrPath || artifacts.fullPath;
     if (preferredImage) {
       await telegramBotClient.sendPhoto(chatId, fs.createReadStream(preferredImage), {
-        caption: `${label}\nJob: ${jobId}\nPID: ${pid}`,
+        caption: `DNI: ${exitInfo.dni || "Desconocido"}\n${label}\nJob: ${jobId}\nPID: ${pid}`,
       });
     }
     await telegramBotClient.sendMessage(chatId, lines.join("\n"), {
@@ -580,6 +581,7 @@ function startBot(chatId, config) {
       code,
       at: nowIso(),
       logPath,
+      dni: env.CHAROLA_DNI,
     };
     pushRecentExit(exitInfo);
     await notifyJobFinished(exitInfo);
