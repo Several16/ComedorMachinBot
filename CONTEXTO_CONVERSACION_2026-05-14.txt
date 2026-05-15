@@ -1,0 +1,24 @@
+CONTEXTO GUARDADO - SESIÓN 2026-05-14
+
+OBJETIVOS LOGRADOS EN ESTA SESIÓN:
+1. DIAGNÓSTICO Y SOLUCIÓN DE CONCURRENCIA MÚLTIPLE (BATCH MODE):
+   - Problema original: El bot solo lograba sacar ticket para la primera cuenta de la lista configurada en el modo Automático, fallando en procesar hasta 20 cuentas simultáneas debido a cuellos de botella y límites de RAM al abrir múltiples navegadores Chromium independientes.
+   - Solución implementada: Se reestructuró `charola-auto.js` para introducir el "Batch Mode". Ahora, a la hora programada, el bot abre una ÚNICA instancia de Chromium y lanza múltiples pestañas ligeras en paralelo (con un retraso escalonado de 1.5s) para todas las cuentas registradas. Esto reduce drásticamente el consumo de memoria del VPS (DigitalOcean) y asegura que todas las credenciales ataquen la página de la UNCP simultáneamente.
+
+2. MEJORA DE EXPERIENCIA DE USUARIO (UX) Y GESTIÓN DE CUENTAS:
+   - Se eliminaron los antiguos "Reply Keyboards" gigantes en el menú principal (`/start`), reemplazándolos por "Inline Keyboards" (botones transparentes debajo de los mensajes) para una interfaz más limpia, moderna y profesional.
+   - Se reemplazó el botón de "Limpiar Cuentas" (que borraba toda la lista de golpe) por un nuevo gestor "📋 Ver / Borrar Cuentas". Este permite al usuario ver todas las cuentas registradas y eliminar credenciales específicas de forma individual usando botones inline.
+
+3. RECEPCIÓN DE TICKETS EN TIEMPO REAL:
+   - En el nuevo modo Batch, la comunicación entre `charola-auto.js` y `telegram-bot.js` fue optimizada. El proceso principal lee los logs en tiempo real (`stdout`) y envía la captura de pantalla/QR a Telegram en el instante exacto en que una pestaña logra asegurar un ticket, sin tener que esperar a que todas las demás cuentas terminen.
+
+4. DIAGNÓSTICO DE ERROR 409 (TELEGRAM CONFLICT):
+   - Se identificó que el Error 409 devuelto por Telegram se debía a que existían procesos locales de `node` corriendo el bot en la computadora personal del usuario mientras el VPS de DigitalOcean también estaba activo. Se instruyó al usuario cerrar instancias locales para mantener la exclusividad del token en el VPS.
+
+5. CONTROL DE VERSIONES (GIT) - REVERSIÓN:
+   - Se aplicó temporalmente un rediseño de mensajes (estilo terminal/factura), el cual introdujo un error de sintaxis que crasheaba el bot.
+   - Para garantizar la estabilidad de producción, se ejecutó un `git reset --hard` (acompañado de un `git push --force`) para devolver el bot al estado estable anterior que ya incluía el Batch Mode y los botones Inline. Se guió al usuario sobre cómo usar `git fetch --all && git reset --hard origin/main` en el VPS para superar el conflicto del force-push.
+
+PENDIENTES / SIGUIENTES PASOS:
+- La lógica base operativa y de concurrencia está sólida.
+- Se brindaron instrucciones para configurar `ADMIN_PANEL_PUBLIC_URL` y acceder al panel de control remoto vía web utilizando la IP pública del Droplet.
