@@ -688,7 +688,7 @@ function getAutoMenuPayload(chatId) {
           { text: "▶️ Probar ahora", callback_data: "cron_run_now" },
         ],
         [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }, { text: "➕ Añadir Cuenta", callback_data: "cron_credentials" }],
-        [{ text: "📋 Ver Cuentas", callback_data: "cron_view_accounts" }, { text: "🗑️ Limpiar Cuentas", callback_data: "cron_clear_accounts" }],
+        [{ text: "📋 Ver / Borrar Cuentas", callback_data: "cron_manage_accounts" }],
         [{ text: `⚡ Modo: ${auto.turboMode ? "TURBO" : "NORMAL"}`, callback_data: "cron_mode" }],
       ],
     },
@@ -1688,6 +1688,38 @@ bot.on("callback_query", async (query) => {
   const data = query.data;
   const u = ensureUserAutoRun(chatId);
 
+  // Router para botones del menú principal (cmd_*)
+  if (data.startsWith("cmd_")) {
+    await bot.answerCallbackQuery(query.id);
+    const mockMsg = { chat: { id: chatId }, from: query.from, text: "" };
+    switch (data) {
+      case "cmd_iniciar": return onCommand(bot, mockMsg, "/iniciar", []);
+      case "cmd_auto": return onCommand(bot, mockMsg, "/menu_tarea", []);
+      case "cmd_status": return onCommand(bot, mockMsg, "/status", []);
+      case "cmd_detener": return onCommand(bot, mockMsg, "/detener", ["all"]);
+      case "cmd_foto": return onCommand(bot, mockMsg, "/foto", []);
+      case "cmd_licencia": return onCommand(bot, mockMsg, "/mi_licencia", []);
+      case "cmd_admin": return onCommand(bot, mockMsg, "/admin", []);
+      case "cmd_licencias": return onCommand(bot, mockMsg, "/licencias", []);
+    }
+  }
+
+  // Router para borrado individual de cuentas
+  if (data.startsWith("del_acc_")) {
+    const index = parseInt(data.replace("del_acc_", ""), 10);
+    if (!isNaN(index) && Array.isArray(u.autoRun.accounts) && u.autoRun.accounts[index]) {
+      const deletedDni = u.autoRun.accounts[index].dni;
+      u.autoRun.accounts.splice(index, 1);
+      saveState();
+      await bot.answerCallbackQuery(query.id, { text: `Cuenta ${deletedDni} eliminada.` });
+      // Refrescar el menú de gestión
+      query.data = "cron_manage_accounts"; 
+    } else {
+      await bot.answerCallbackQuery(query.id, { text: "Error al borrar cuenta." });
+      return;
+    }
+  }
+
   try {
     if (data === "cron_enable") {
       if (!hasAutoCredentials(u.autoRun)) {
@@ -1719,15 +1751,26 @@ bot.on("callback_query", async (query) => {
       setFlow(chatId, { type: "cron_credentials", step: "dni", data: {} });
       await bot.answerCallbackQuery(query.id);
       await bot.sendMessage(chatId, "Vamos a configurar tus datos automáticos.\n1/2 Envíame tu DNI (solo números).", { reply_markup: cancelKeyboard() });
-    } else if (data === "cron_view_accounts") {
+    } else if (data === "cron_manage_accounts") {
       const accs = u.autoRun.accounts || [];
       if (!accs.length) {
         await bot.answerCallbackQuery(query.id, { text: "No hay cuentas registradas.", show_alert: true });
         return;
       }
-      const list = accs.map((a, i) => `${i + 1}. DNI: ${a.dni}`).join("\n");
+      
+      const keyboard = accs.map((a, i) => ([
+        { text: `DNI: ${a.dni}`, callback_data: "ignore" },
+        { text: "🗑️ Borrar", callback_data: `del_acc_${i}` }
+      ]));
+      keyboard.push([{ text: "🔙 Volver", callback_data: "cmd_auto" }]);
+
       await bot.answerCallbackQuery(query.id);
-      await bot.sendMessage(chatId, `📋 *Tus cuentas registradas:*\n\n${list}`, { parse_mode: "Markdown" });
+      await bot.editMessageText("📋 *Gestión de Cuentas*\nSelecciona el botón de borrar al lado de la cuenta que deseas eliminar:", {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: keyboard }
+      });
     } else if (data === "cron_clear_accounts") {
       u.autoRun.accounts = [];
       saveState();
@@ -1928,6 +1971,40 @@ console.log(`PANEL_KEY: ${PANEL_KEY}`);
 if (!TELEGRAM_ALLOWED_CHAT_ID) {
   console.log("Aviso: TELEGRAM_ALLOWED_CHAT_ID no configurado; cualquier chat puede escribir.");
 }
+if (!IS_WINDOWS) {
+  console.log("Aviso: comandos de tarea programada de Windows deshabilitados en este sistema.");
+}
+
+startPanelServer(PANEL_PORT);
+
+function killZombies() {
+  for (const job of runningJobs.values()) {
+    try {
+      if (job.process) job.process.kill();
+    } catch (e) {}
+  }
+}
+
+async function gracefulShutdown(signal) {
+  console.log(`Recibido ${signal}, cerrando conexiones...`);
+  killZombies();
+  try {
+    console.log("Deteniendo polling de Telegram...");
+    await bot.stopPolling();
+    console.log("Polling de Telegram detenido correctamente.");
+  } catch (err) {
+    console.error("Error al detener polling:", err.message);
+  }
+  process.exit(0);
+}
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+
+startPolling("startup").catch((error) => {
+  console.error("Error iniciando polling:", error.message);
+  schedulePollingRestart("startup-catch");
+});
 if (!IS_WINDOWS) {
   console.log("Aviso: comandos de tarea programada de Windows deshabilitados en este sistema.");
 }
