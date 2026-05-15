@@ -8,6 +8,7 @@ const CONFIG = {
   url: "https://comedor.uncp.edu.pe/charola",
   dni: process.env.CHAROLA_DNI || "73968815",
   codigo: process.env.CHAROLA_CODIGO || "2023200615D",
+  accountsJson: process.env.CHAROLA_ACCOUNTS || null,
   maxAttempts: Number(process.env.CHAROLA_MAX_ATTEMPTS || 1200),
   retryDelayMs: Number(process.env.CHAROLA_RETRY_DELAY_MS || 800),
   afterSubmitWaitMs: Number(process.env.CHAROLA_AFTER_SUBMIT_WAIT_MS || 1200),
@@ -148,7 +149,7 @@ async function openAccessIfPresent(page) {
   }
 }
 
-async function runAttempt(page, attempt) {
+async function runAttempt(page, attempt, account) {
   await safeNavigate(page, attempt);
   await openAccessIfPresent(page);
 
@@ -168,7 +169,7 @@ async function runAttempt(page, attempt) {
 
   if (!hasForm) {
     const bodyPrecheck = normalizeText(await page.locator("body").textContent());
-    const artifacts = await saveRetryArtifacts(page, `precheck-attempt-${attempt}`, attempt);
+    const artifacts = await saveRetryArtifacts(page, `precheck-attempt-${attempt}-${account.dni}`, attempt);
     if (containsAny(bodyPrecheck, PRECHECK_MESSAGES) || containsAny(bodyPrecheck, RETRY_MESSAGES)) {
       return { status: "retry", reason: "Formulario aun no habilitado", artifacts };
     }
@@ -176,14 +177,14 @@ async function runAttempt(page, attempt) {
   }
 
   try {
-    await dniInput.fill(CONFIG.dni, { timeout: 15000 });
-    await codigoInput.fill(CONFIG.codigo, { timeout: 15000 });
+    await dniInput.fill(account.dni, { timeout: 15000 });
+    await codigoInput.fill(account.codigo, { timeout: 15000 });
     const submit = page.locator("button:has-text('GENERAR TICKET')").first();
     await submit.click({ timeout: CONFIG.formWaitMs });
     await page.waitForTimeout(CONFIG.afterSubmitWaitMs);
   } catch (error) {
     const bodyError = normalizeText(await page.locator("body").textContent());
-    const artifacts = await saveRetryArtifacts(page, `interaction-attempt-${attempt}`, attempt);
+    const artifacts = await saveRetryArtifacts(page, `interaction-attempt-${attempt}-${account.dni}`, attempt);
     if (
       String((error && error.name) || "").includes("Timeout") ||
       containsAny(bodyError, PRECHECK_MESSAGES) ||
@@ -199,27 +200,25 @@ async function runAttempt(page, attempt) {
   const hasSuccessMessage = containsAny(body, SUCCESS_MESSAGES);
 
   if (hasSuccessButton || hasSuccessMessage) {
-    const artifacts = await saveArtifacts(page, `success-attempt-${attempt}`);
+    const artifacts = await saveArtifacts(page, `success-attempt-${attempt}-${account.dni}`);
     return { status: "success", reason: "Ticket generado con QR", artifacts };
   }
 
   if (containsAny(body, FATAL_MESSAGES)) {
-    const artifacts = await saveArtifacts(page, `fatal-attempt-${attempt}`);
+    const artifacts = await saveArtifacts(page, `fatal-attempt-${attempt}-${account.dni}`);
     return { status: "fatal", reason: "Dato invalido o ticket no permitido", artifacts };
   }
 
   if (containsAny(body, RETRY_MESSAGES)) {
-    const artifacts = await saveRetryArtifacts(page, `retry-attempt-${attempt}`, attempt);
+    const artifacts = await saveRetryArtifacts(page, `retry-attempt-${attempt}-${account.dni}`, attempt);
     return { status: "retry", reason: "Servicio aun no disponible o sin cupos", artifacts };
   }
 
-  const artifacts = await saveRetryArtifacts(page, `unknown-attempt-${attempt}`, attempt);
+  const artifacts = await saveRetryArtifacts(page, `unknown-attempt-${attempt}-${account.dni}`, attempt);
   return { status: "retry", reason: "Respuesta no reconocida, se reintenta", artifacts };
 }
 
-async function main() {
-  ensureDir(CONFIG.outputDir);
-  const browser = await chromium.launch({ headless: CONFIG.headless });
+async function processAccount(browser, account) {
   const context = await browser.newContext();
   await context.route("**/*", (route) => {
     const type = route.request().resourceType();
@@ -232,13 +231,11 @@ async function main() {
   const page = await context.newPage();
 
   try {
-    console.log(
-      `[${new Date().toLocaleString()}] Modo ${CONFIG.turboMode ? "TURBO" : "NORMAL"} | reintento ${CONFIG.retryDelayMs}ms | intentos max ${CONFIG.maxAttempts}`
-    );
     for (let attempt = 1; attempt <= CONFIG.maxAttempts; attempt += 1) {
-      const result = await runAttempt(page, attempt);
-      const prefix = `[${new Date().toLocaleString()}] intento ${attempt}/${CONFIG.maxAttempts}`;
+      const result = await runAttempt(page, attempt, account);
+      const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] intento ${attempt}/${CONFIG.maxAttempts}`;
       console.log(`${prefix}: ${result.status.toUpperCase()} - ${result.reason}`);
+      
       if (result.artifacts) {
         console.log(`  captura: ${result.artifacts.fullPath}`);
         if (result.artifacts.qrPath) {
@@ -247,13 +244,13 @@ async function main() {
       }
 
       if (result.status === "success") {
-        await browser.close();
-        process.exit(0);
+        console.log(`[BATCH_SUCCESS] DNI: ${account.dni} | CAPTURA: ${result.artifacts.fullPath} | QR: ${result.artifacts.qrPath || 'null'}`);
+        return { success: true, dni: account.dni };
       }
 
       if (result.status === "fatal") {
-        await browser.close();
-        process.exit(2);
+        console.log(`[BATCH_FATAL] DNI: ${account.dni} | ERROR: ${result.reason}`);
+        return { success: false, dni: account.dni, reason: result.reason };
       }
 
       if (attempt < CONFIG.maxAttempts) {
@@ -261,13 +258,49 @@ async function main() {
         await sleep(delay);
       }
     }
+    return { success: false, dni: account.dni, reason: "Max intentos alcanzado" };
+  } catch (error) {
+    console.error(`[DNI: ${account.dni}] Error crítico: ${error.message}`);
+    return { success: false, dni: account.dni, reason: error.message };
   } finally {
     await context.close();
-    await browser.close();
+  }
+}
+
+async function main() {
+  ensureDir(CONFIG.outputDir);
+  const browser = await chromium.launch({ headless: CONFIG.headless });
+  
+  let accountsToRun = [];
+  if (CONFIG.accountsJson) {
+    try {
+      accountsToRun = JSON.parse(CONFIG.accountsJson);
+    } catch {
+      console.error("Error parseando CHAROLA_ACCOUNTS");
+    }
+  }
+  
+  if (accountsToRun.length === 0) {
+    accountsToRun.push({ dni: CONFIG.dni, codigo: CONFIG.codigo });
   }
 
-  console.error("No se pudo generar ticket dentro del numero maximo de intentos.");
-  process.exit(1);
+  console.log(`[${new Date().toLocaleString()}] Iniciando modo ${CONFIG.turboMode ? "TURBO" : "NORMAL"} para ${accountsToRun.length} cuenta(s).`);
+
+  try {
+    const promises = accountsToRun.map(acc => processAccount(browser, acc));
+    const results = await Promise.all(promises);
+    
+    const successes = results.filter(r => r.success).length;
+    console.log(`[${new Date().toLocaleString()}] Ejecución finalizada. Éxitos: ${successes}/${accountsToRun.length}`);
+    
+    if (successes > 0 || accountsToRun.length > 1) {
+      process.exit(0); // Éxito parcial o total
+    } else {
+      process.exit(1); // Falla si era una sola cuenta y no lo logró
+    }
+  } finally {
+    await browser.close();
+  }
 }
 
 main().catch((error) => {

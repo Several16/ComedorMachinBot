@@ -306,6 +306,13 @@ function ensureUserAutoRun(chatId) {
 
 function hasAutoCredentials(autoRun) {
   if (!autoRun) return false;
+  
+  // Si tiene cuentas múltiples registradas, es válido
+  if (Array.isArray(autoRun.accounts) && autoRun.accounts.length > 0) {
+    return true;
+  }
+  
+  // Soporte legacy (cuenta única)
   const dni = String(autoRun.dni || "").replace(/\D/g, "");
   const codigo = String(autoRun.codigo || "").trim();
   return dni.length >= 8 && codigo.length >= 4;
@@ -538,6 +545,7 @@ function startBot(chatId, config) {
   const env = { ...process.env };
   env.CHAROLA_DNI = String(config.dni || "");
   env.CHAROLA_CODIGO = String(config.codigo || "");
+  if (config.accounts) env.CHAROLA_ACCOUNTS = JSON.stringify(config.accounts);
   env.CHAROLA_MAX_ATTEMPTS = String(safeNumber(config.maxAttempts, DEFAULTS.maxAttempts));
   env.CHAROLA_RETRY_DELAY_MS = String(safeNumber(config.retryDelayMs, DEFAULTS.retryDelayMs));
   env.CHAROLA_AFTER_SUBMIT_WAIT_MS = String(safeNumber(config.afterSubmitWaitMs, 6000));
@@ -565,7 +573,26 @@ function startBot(chatId, config) {
   startLoadingIndicator(ownerChatId);
 
   stream.write(`[${nowIso()}] Job iniciado desde Telegram | jobId=${jobId} | chatId=${ownerChatId}\n`);
-  child.stdout.on("data", (c) => stream.write(String(c)));
+  child.stdout.on("data", (c) => {
+    const text = String(c);
+    stream.write(text);
+    const lines = text.split('\n');
+    for (const line of lines) {
+      const match = line.match(/\[BATCH_SUCCESS\] DNI: (\d+).*CAPTURA: ([^|]+).*QR: (.*)/);
+      if (match && telegramBotClient) {
+        const dni = match[1].trim();
+        const cap = match[2].trim();
+        const qrRaw = match[3].trim();
+        const qr = qrRaw !== 'null' ? qrRaw : null;
+        const pref = qr || cap;
+        if (fs.existsSync(pref)) {
+          telegramBotClient.sendPhoto(ownerChatId, fs.createReadStream(pref), {
+            caption: `✅ Ticket conseguido en Batch!\nDNI: ${dni}\nJob: ${jobId}`
+          }).catch(()=>{});
+        }
+      }
+    }
+  });
   child.stderr.on("data", (c) => stream.write(String(c)));
   child.on("close", async (code) => {
     stream.write(`\n[${nowIso()}] Bot finalizado con código ${code}\n`);
@@ -718,21 +745,32 @@ function setupUserCron(chatId) {
     }
 
     const launch = () => {
-      const result = startBot(id, {
-        dni: u.autoRun.dni,
-        codigo: u.autoRun.codigo,
-        turboMode: u.autoRun.turboMode !== false
-      });
-
-      if (result.started && telegramBotClient) {
+      let accountsToRun = Array.isArray(u.autoRun.accounts) ? u.autoRun.accounts : [];
+      if (accountsToRun.length === 0 && u.autoRun.dni && u.autoRun.codigo) {
+        accountsToRun = [{ dni: u.autoRun.dni, codigo: u.autoRun.codigo }];
+      }
+      
+      const turboModeFlag = u.autoRun.turboMode !== false;
+      
+      if (telegramBotClient) {
         telegramBotClient
           .sendMessage(
             id,
-            `⏰ Bot iniciado automáticamente. Hora objetivo: ${u.autoRun.time} | inicio real: ${startTime} (Lima).`
+            `⏰ Auto iniciado en Batch Mode para ${accountsToRun.length} cuenta(s). Hora: ${u.autoRun.time} | inicio real: ${startTime} (Lima).`
           )
           .catch(() => {});
-      } else if (telegramBotClient) {
-        telegramBotClient.sendMessage(id, `⏰ Falló el inicio automático: ${result.reason}`).catch(() => {});
+      }
+
+      // Lanza una sola instancia de startBot pasando todas las cuentas
+      const result = startBot(id, {
+        accounts: accountsToRun,
+        turboMode: turboModeFlag,
+        maxAttempts: DEFAULTS.maxAttempts,
+        retryDelayMs: DEFAULTS.retryDelayMs,
+      });
+
+      if (!result.started && telegramBotClient) {
+        telegramBotClient.sendMessage(id, `❌ Falló el inicio auto en bloque: ${result.reason}`).catch(() => {});
       }
     };
 
@@ -1702,27 +1740,28 @@ bot.on("callback_query", async (query) => {
       await renderAutoMenu(bot, chatId, query.message.message_id);
     } else if (data === "cron_run_now") {
       if (!hasAutoCredentials(u.autoRun)) {
-        await bot.answerCallbackQuery(query.id, { text: "Faltan credenciales.", show_alert: true });
-        await bot.sendMessage(chatId, "Configura primero DNI/Código en ⏰ Auto -> 🔑 Credenciales.");
+        await bot.answerCallbackQuery(query.id, { text: "Faltan cuentas.", show_alert: true });
+        await bot.sendMessage(chatId, "Añade al menos una cuenta en ⏰ Auto -> ➕ Añadir Cuenta.");
         return;
       }
-      const result = startBot(chatId, {
-        dni: u.autoRun.dni,
-        codigo: u.autoRun.codigo,
-        turboMode: u.autoRun.turboMode !== false,
-        maxAttempts: DEFAULTS.maxAttempts,
-        retryDelayMs: DEFAULTS.retryDelayMs,
+      await bot.answerCallbackQuery(query.id, { text: "Prueba iniciada para múltiples cuentas." });
+      const accounts = u.autoRun.accounts || [];
+      const turboModeFlag = u.autoRun.turboMode !== false;
+      await bot.sendMessage(chatId, `▶️ Prueba iniciada para ${accounts.length} cuenta(s) en modo ${turboModeFlag ? "TURBO" : "NORMAL"}.`);
+      accounts.forEach((acc, index) => {
+        setTimeout(() => {
+          const result = startBot(chatId, {
+            dni: acc.dni,
+            codigo: acc.codigo,
+            turboMode: turboModeFlag,
+            maxAttempts: DEFAULTS.maxAttempts,
+            retryDelayMs: DEFAULTS.retryDelayMs,
+          });
+          if (!result.started) {
+            bot.sendMessage(chatId, `❌ Error iniciando ${acc.dni}: ${result.reason}`).catch(()=>{});
+          }
+        }, index * 1500);
       });
-      if (!result.started) {
-        await bot.answerCallbackQuery(query.id, { text: "No se pudo iniciar.", show_alert: true });
-        await bot.sendMessage(chatId, `No se pudo iniciar la prueba automática: ${result.reason}`);
-        return;
-      }
-      await bot.answerCallbackQuery(query.id, { text: "Prueba iniciada." });
-      await bot.sendMessage(
-        chatId,
-        `▶️ Prueba automática iniciada.\nJob: ${result.jobId}\nPID: ${result.pid}\nModo: ${u.autoRun.turboMode ? "TURBO" : "NORMAL"}`
-      );
       await renderAutoMenu(bot, chatId, query.message.message_id);
     }
   } catch (err) {

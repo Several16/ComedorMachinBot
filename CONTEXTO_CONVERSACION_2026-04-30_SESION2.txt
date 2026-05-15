@@ -1,0 +1,21 @@
+CONTEXTO GUARDADO - SESIÓN 2 - 2026-04-30
+
+OBJETIVOS LOGRADOS EN ESTA SESIÓN:
+1. RESOLUCIÓN DE ERROR "Error al leer perfil":
+   - Se investigó el reporte del usuario al intentar habilitar el modo "Auto" desde Telegram, el cual devolvía el error "Error al leer el perfil".
+   - Causa: El objeto `autoRun` no existía o no se estaba inicializando correctamente en los perfiles de los usuarios preexistentes dentro de `licenses.users`.
+   - Solución: Se agregó lógica de inicialización defensiva tanto en el comando `/menu_tarea` como en el evento `callback_query`. Si el usuario no tiene `autoRun`, se le asigna una configuración por defecto (`{ enabled: false, time: "07:00", dni: "", codigo: "", turboMode: true }`).
+
+2. IMPLEMENTACIÓN DE CRON MULTI-USUARIO:
+   - Se eliminó la lógica legacy de una única Tarea Programada global (`activeCronJob`, `currentCronTime`, `ensureTaskAt`).
+   - Se implementó un mapa `userCronJobs` para manejar procesos de `node-cron` individuales para cada usuario.
+   - Se creó la función `setupUserCron(chatId)` que lee la configuración `autoRun` específica del usuario (hora, DNI, código, modo turbo) y programa un cron job individual en el servidor local.
+   - Se modificaron los handlers de flujos para permitir al usuario guardar sus credenciales (`cron_credentials`) y su hora (`cron_time`) directamente en su perfil individual.
+   - Se modificó la función `sendStatus` (comando `/status`) para mostrar el estado de la tarea automática específica del usuario, en lugar del estado global.
+
+3. SINCRONIZACIÓN CON GITHUB:
+   - Se hizo commit y push de todos los cambios realizados en `telegram-bot.js` al repositorio `https://github.com/Several16/ComedorMachinBot` en la rama `main`.
+
+PRÓXIMOS PASOS (PARA LA SIGUIENTE SESIÓN):
+- El sistema de cron multi-usuario ya está funcional. Cada usuario que configure su hora y credenciales desde el menú "⏰ Auto" tendrá su propio worker lanzándose a la hora especificada.
+- Continuar con monitoreo de rendimiento o nuevas funcionalidades solicitadas por el usuario.
