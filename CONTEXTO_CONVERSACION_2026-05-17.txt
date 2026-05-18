@@ -1,0 +1,28 @@
+CONTEXTO GUARDADO - SESIÓN 2026-05-17
+
+OBJETIVOS LOGRADOS EN ESTA SESIÓN:
+1. ANÁLISIS DE FALLOS EN EXTRACCIÓN (BATCH MODE):
+   - Se investigó por qué el bot registraba "DNI Desconocido" pero con estado "Éxito". Se determinó que era un bug visual en `telegram-bot.js` al no encontrar la variable `CHAROLA_DNI` (usada en modo de cuenta única) cuando se ejecutaba en Batch Mode. Se corrigió el reporte para que muestre "Batch (Múltiples Cuentas)" adecuadamente.
+   - Se analizó el motivo por el cual el viernes solo se extrajeron 4 cupos y los fines de semana los 8: se debe a la alta saturación de la página (Timeouts) versus el nulo tráfico en fin de semana.
+
+2. ESCALABILIDAD A 40 CUENTAS EN VPS DE 2GB RAM:
+   - Problema técnico identificado: Abrir 40 pestañas de Chromium simultáneamente mediante Playwright causaría un Out of Memory (OOM) o CPU 100% en un VPS pequeño de 2GB.
+   - Solución implementada: "Modo Híbrido" o "Ataque Crudo (RAW)".
+
+3. DESARROLLO DEL MODO HÍBRIDO:
+   - Se extrajo la lógica de la aplicación Angular original de la UNCP, revelando el endpoint real: `POST https://comensales.uncp.edu.pe/api/registros` enviando un `FormData` con `{"t1_dni": "...", "t1_codigo": "..."}`.
+   - Se creó un nuevo sistema de ejecución (`execMode: 'raw'`) en `charola-auto.js` que utiliza `fetch` nativo para enviar las 40 peticiones simultáneas sin usar Playwright, consumiendo menos de 1MB de RAM.
+   - Flujo de Fase Doble integrado en `telegram-bot.js`:
+     - FASE 1 (Pre-Arranque 6:57 AM): El bot bombardea la API directamente.
+     - FASE 2 (7:20 AM - Retrasado): El bot inicia Playwright en lotes de 5 cuentas (`chunkSize`) de manera silenciosa para ir a "recoger" visualmente los códigos QR de los cupos previamente asegurados y enviarlos a Telegram.
+
+4. RESILIENCIA Y TIMEOUTS DEL SERVIDOR:
+   - Se añadió un `AbortController` en el nuevo modo crudo (RAW). Si el servidor saturado de la UNCP se "congela" y no responde en 12 segundos, el bot aborta violentamente la conexión y lanza otra petición al instante. Así se asegura no perder valiosos segundos durante el minuto crítico de las 7:00 AM.
+
+5. CORRECCIÓN DEL BOTÓN "PROBAR AHORA":
+   - Se identificó que probar el flujo manual desde Telegram generaba múltiples procesos asíncronos concurrentes que crasheaban y se sobreescribían entre sí.
+   - Se corrigió el manejador `cron_run_now` para que lance un proceso unificado (Batch), e incluya una "vía rápida" para pruebas del Modo Híbrido (1 minuto de espera para Fase 2 en lugar de 20 minutos).
+
+PENDIENTES / SIGUIENTES PASOS:
+- Desplegar cambios en el VPS mediante `git pull origin main` y probar la efectividad del ataque RAW en un día real saturado (ej. lunes a viernes).
+- Validar si la API devuelve nuevos tipos de errores que necesiten ser manejados.
