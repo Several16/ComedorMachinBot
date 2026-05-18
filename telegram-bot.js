@@ -501,10 +501,12 @@ async function notifyJobFinished(exitInfo) {
   if (!NOTIFY_JOB_FINISH || !telegramBotClient || !exitInfo) return;
   const { chatId, code, jobId, pid, logPath } = exitInfo;
   const label = exitCodeLabel(code);
+  const isBatch = !exitInfo.dni && exitInfo.logPath && exitInfo.logPath.includes("tg-");
+  const dniLine = isBatch ? `*Modo:* \`Batch (Múltiples Cuentas)\`` : `*DNI:* \`${exitInfo.dni || "Desconocido"}\``;
   const lines = [
     `🔔 *Reporte de Ejecución*`,
     `───────────────`,
-    `*DNI:* \`${exitInfo.dni || "Desconocido"}\``,
+    dniLine,
     `*Estado:* ${label}`,
     `*Job ID:* \`${jobId}\``,
     `*PID:* ${pid}`,
@@ -516,7 +518,7 @@ async function notifyJobFinished(exitInfo) {
     const preferredImage = artifacts.qrPath || artifacts.fullPath;
     if (preferredImage) {
       await telegramBotClient.sendPhoto(chatId, fs.createReadStream(preferredImage), {
-        caption: `DNI: ${exitInfo.dni || "Desconocido"}\n${label}\nJob: ${jobId}\nPID: ${pid}`,
+        caption: `${isBatch ? 'Batch (Múltiples Cuentas)' : 'DNI: ' + (exitInfo.dni || "Desconocido")}\n${label}\nJob: ${jobId}\nPID: ${pid}`,
       });
     }
     await telegramBotClient.sendMessage(chatId, lines.join("\n"), {
