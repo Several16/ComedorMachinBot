@@ -1839,23 +1839,60 @@ bot.on("callback_query", async (query) => {
         return;
       }
       await bot.answerCallbackQuery(query.id, { text: "Prueba iniciada para múltiples cuentas." });
-      const accounts = u.autoRun.accounts || [];
+      
+      let accountsToRun = Array.isArray(u.autoRun.accounts) ? u.autoRun.accounts : [];
+      if (accountsToRun.length === 0 && u.autoRun.dni && u.autoRun.codigo) {
+        accountsToRun = [{ dni: u.autoRun.dni, codigo: u.autoRun.codigo }];
+      }
+      
       const turboModeFlag = u.autoRun.turboMode !== false;
-      await bot.sendMessage(chatId, `▶️ Prueba iniciada para ${accounts.length} cuenta(s) en modo ${turboModeFlag ? "TURBO" : "NORMAL"}.`);
-      accounts.forEach((acc, index) => {
+      const isHybrid = u.autoRun.execMode === 'raw_hybrid';
+      
+      await bot.sendMessage(
+        chatId, 
+        `▶️ Prueba manual iniciada. Cuentas: ${accountsToRun.length}. Estrategia: ${isHybrid ? '🚀 Híbrido' : '🎭 Playwright'}.`
+      );
+
+      if (isHybrid) {
+        const resultRaw = startBot(chatId, {
+          accounts: accountsToRun,
+          turboMode: turboModeFlag,
+          execMode: 'raw',
+          maxAttempts: DEFAULTS.maxAttempts,
+          retryDelayMs: DEFAULTS.retryDelayMs,
+        });
+
+        if (!resultRaw.started) {
+          bot.sendMessage(chatId, `❌ Falló fase cruda: ${resultRaw.reason}`).catch(() => {});
+        } else {
+          bot.sendMessage(chatId, "⏳ Fase Híbrida 1 (Cruda) iniciada. Simulando espera visual de 20 min (se lanzará en 1 min para esta prueba)...").catch(() => {});
+        }
+        
+        // En modo prueba, reducimos la espera a 1 minuto en lugar de 20 minutos
         setTimeout(() => {
-          const result = startBot(chatId, {
-            dni: acc.dni,
-            codigo: acc.codigo,
+          bot.sendMessage(chatId, "📸 Iniciando Fase 2 (Visual) de la prueba...").catch(() => {});
+          startBot(chatId, {
+            accounts: accountsToRun,
             turboMode: turboModeFlag,
+            execMode: 'visual',
             maxAttempts: DEFAULTS.maxAttempts,
             retryDelayMs: DEFAULTS.retryDelayMs,
           });
-          if (!result.started) {
-            bot.sendMessage(chatId, `❌ Error iniciando ${acc.dni}: ${result.reason}`).catch(()=>{});
-          }
-        }, index * 1500);
-      });
+        }, 1 * 60 * 1000); 
+      } else {
+        const result = startBot(chatId, {
+          accounts: accountsToRun,
+          turboMode: turboModeFlag,
+          execMode: 'visual',
+          maxAttempts: DEFAULTS.maxAttempts,
+          retryDelayMs: DEFAULTS.retryDelayMs,
+        });
+
+        if (!result.started) {
+          bot.sendMessage(chatId, `❌ Error iniciando: ${result.reason}`).catch(()=>{});
+        }
+      }
+      
       await renderAutoMenu(bot, chatId, query.message.message_id);
     }
   } catch (err) {
