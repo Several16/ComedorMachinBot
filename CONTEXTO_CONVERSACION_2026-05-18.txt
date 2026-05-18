@@ -13,4 +13,9 @@ OBJETIVOS LOGRADOS EN ESTA SESIÓN:
    - Se le explicó al usuario la diferencia entre hacer una petición GET desde Chrome a `https://comensales.uncp.edu.pe/api/registros` (que devuelve la fachada/error) versus la petición POST que hace el bot con los datos empacados, la cual sí es procesada por el servidor.
    - Se confirmó que ya no es necesario inspeccionar la pestaña "Network" manualmente, ya que el bot automatiza el ataque a la API.
 
+4. ACCIONES FINALES Y DESPLIEGUE:
+   - Se cerraron forzosamente (kill) las instancias locales de Node (`telegram-bot.js`) en la PC del usuario para evitar interferencias y el error "409 Conflict" con Telegram.
+   - Se confirmó que los cambios fueron exitosamente subidos a GitHub (`git push origin main`), dejando la rama limpia y lista.
+   - Se dieron las instrucciones finales para hacer el despliegue en el VPS (`git pull origin main` y `pm2 restart charola-tg`).
+
 ESTADO: Listo para la ejecución real del día siguiente.
