@@ -278,15 +278,11 @@ async function processAccountRaw(account) {
   
   for (let attempt = 1; attempt <= Math.min(CONFIG.maxAttempts, 300); attempt += 1) {
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 segundos de timeout
-      
       const res = await fetch("https://comensales.uncp.edu.pe/api/registros", {
         method: "POST",
         body: formData,
-        signal: controller.signal
+        signal: AbortSignal.timeout(12000)
       });
-      clearTimeout(timeoutId);
       
       const json = await res.json();
       

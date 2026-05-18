@@ -1,0 +1,16 @@
+CONTEXTO GUARDADO - SESIÓN 2026-05-18
+
+OBJETIVOS LOGRADOS EN ESTA SESIÓN:
+1. ANÁLISIS DEL FALLO SILENCIOSO A LAS 6:57 AM:
+   - Problema: El usuario reportó que el bot inició a las 6:57 AM pero no dio ninguna respuesta ni reporte posterior.
+   - Causa: En el Modo Híbrido (RAW), el servidor de la UNCP estaba tan saturado que el bot cancelaba su `setTimeout` al recibir los headers, pero se quedaba esperando infinitamente la descarga del cuerpo de la respuesta (`res.json()`) que la UNCP nunca terminaba de enviar.
+   - Solución: Se reemplazó el `setTimeout` manual por `AbortSignal.timeout(12000)` en la petición `fetch` dentro de `charola-auto.js`. Esto garantiza que si toda la transacción (incluyendo la descarga del cuerpo) toma más de 12 segundos, se aborta la petición y se reintenta inmediatamente, evitando que el proceso se quede "zombie".
+
+2. MEJORA EN LA CONFIRMACIÓN POR TELEGRAM:
+   - Se añadió un mensaje explícito en `telegram-bot.js` para la Fase 1. Ahora, al terminar la ejecución RAW con éxito, el bot envía un mensaje a Telegram (🎯 FASE 1 COMPLETADA) indicando la cantidad de cupos asegurados en la base de datos y avisando que la Fase 2 (extracción de imágenes) ocurrirá en 20 minutos. Esto da certeza al usuario inmediatamente a las 7:00 AM.
+
+3. ACLARACIONES TÉCNICAS:
+   - Se le explicó al usuario la diferencia entre hacer una petición GET desde Chrome a `https://comensales.uncp.edu.pe/api/registros` (que devuelve la fachada/error) versus la petición POST que hace el bot con los datos empacados, la cual sí es procesada por el servidor.
+   - Se confirmó que ya no es necesario inspeccionar la pestaña "Network" manualmente, ya que el bot automatiza el ataque a la API.
+
+ESTADO: Listo para la ejecución real del día siguiente.

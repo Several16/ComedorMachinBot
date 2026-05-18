@@ -602,6 +602,10 @@ function startBot(chatId, config) {
         const dni = rawMatch[1].trim();
         telegramBotClient.sendMessage(ownerChatId, `⚡ ¡Cupo asegurado (Modo Crudo)!\nDNI: ${dni}`).catch(()=>{});
       }
+      const rawSummaryMatch = line.match(/Ejecución RAW finalizada\. Éxitos: (\d+\/\d+)/);
+      if (rawSummaryMatch && telegramBotClient) {
+        telegramBotClient.sendMessage(ownerChatId, `🎯 *FASE 1 COMPLETADA (ATAQUE RAW)*\n¡Se han asegurado los cupos directamente en la base de datos! (${rawSummaryMatch[1]}).\n\n_El bot arrancará automáticamente la Fase 2 (Visual) en 20 minutos para recoger las fotos de los QRs._`, {parse_mode: "Markdown"}).catch(()=>{});
+      }
     }
   });
   child.stderr.on("data", (c) => stream.write(String(c)));
