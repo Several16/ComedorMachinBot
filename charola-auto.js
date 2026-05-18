@@ -19,6 +19,8 @@ const CONFIG = {
   turboMode: TURBO_DEFAULT,
   headless: process.env.CHAROLA_HEADLESS !== "false",
   outputDir: path.join(__dirname, "runs"),
+  execMode: process.env.CHAROLA_EXECUTION_MODE || "visual",
+  chunkSize: Number(process.env.CHAROLA_CHUNK_SIZE || 5)
 };
 
 const RETRY_MESSAGES = [
@@ -235,7 +237,7 @@ async function processAccount(browser, account) {
       const result = await runAttempt(page, attempt, account);
       const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] intento ${attempt}/${CONFIG.maxAttempts}`;
       console.log(`${prefix}: ${result.status.toUpperCase()} - ${result.reason}`);
-      
+
       if (result.artifacts) {
         console.log(`  captura: ${result.artifacts.fullPath}`);
         if (result.artifacts.qrPath) {
@@ -267,10 +269,51 @@ async function processAccount(browser, account) {
   }
 }
 
-async function main() {
-  ensureDir(CONFIG.outputDir);
-  const browser = await chromium.launch({ headless: CONFIG.headless });
+async function processAccountRaw(account) {
+  const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RAW]`;
+  console.log(`${prefix} Iniciando...`);
   
+  const formData = new FormData();
+  formData.append("data", JSON.stringify({ t1_dni: account.dni, t1_codigo: account.codigo }));
+  
+  for (let attempt = 1; attempt <= Math.min(CONFIG.maxAttempts, 300); attempt += 1) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 segundos de timeout
+      
+      const res = await fetch("https://comensales.uncp.edu.pe/api/registros", {
+        method: "POST",
+        body: formData,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      
+      const json = await res.json();
+      
+      if (json.code === 200 || json.code === 201) {
+        console.log(`[RAW_SUCCESS] DNI: ${account.dni}`);
+        return { success: true, dni: account.dni };
+      } else {
+        const msg = String(json.message || "").toUpperCase();
+        if (msg.includes("CUPOS") || msg.includes("HORARIO")) {
+          // Aún no abren o saturado
+          if (attempt % 5 === 0) console.log(`${prefix} Intento ${attempt}: ${json.message}`);
+          await sleep(CONFIG.retryDelayMs);
+        } else {
+          // Fatal
+          console.log(`[RAW_FATAL] DNI: ${account.dni} | ERROR: ${json.message}`);
+          return { success: false, dni: account.dni, reason: json.message };
+        }
+      }
+    } catch (e) {
+      if (attempt % 5 === 0) console.log(`${prefix} Intento ${attempt}: Error de red o Timeout, reintentando...`);
+      await sleep(CONFIG.retryDelayMs);
+    }
+  }
+  return { success: false, dni: account.dni, reason: "Max intentos alcanzado" };
+}
+
+async function main() {
   let accountsToRun = [];
   if (CONFIG.accountsJson) {
     try {
@@ -279,27 +322,50 @@ async function main() {
       console.error("Error parseando CHAROLA_ACCOUNTS");
     }
   }
-  
+
   if (accountsToRun.length === 0) {
     accountsToRun.push({ dni: CONFIG.dni, codigo: CONFIG.codigo });
   }
 
-  console.log(`[${new Date().toLocaleString()}] Iniciando modo ${CONFIG.turboMode ? "TURBO" : "NORMAL"} para ${accountsToRun.length} cuenta(s).`);
-
-  try {
-    const promises = accountsToRun.map(acc => processAccount(browser, acc));
-    const results = await Promise.all(promises);
-    
-    const successes = results.filter(r => r.success).length;
-    console.log(`[${new Date().toLocaleString()}] Ejecución finalizada. Éxitos: ${successes}/${accountsToRun.length}`);
-    
-    if (successes > 0 || accountsToRun.length > 1) {
-      process.exit(0); // Éxito parcial o total
-    } else {
-      process.exit(1); // Falla si era una sola cuenta y no lo logró
+  if (CONFIG.execMode === "raw") {
+    console.log(`[${new Date().toLocaleString()}] Iniciando modo RAW para ${accountsToRun.length} cuenta(s).`);
+    const chunkSize = 15;
+    const results = [];
+    for (let i = 0; i < accountsToRun.length; i += chunkSize) {
+      const chunk = accountsToRun.slice(i, i + chunkSize);
+      const chunkResults = await Promise.all(chunk.map(acc => processAccountRaw(acc)));
+      results.push(...chunkResults);
+      if (i + chunkSize < accountsToRun.length) await sleep(500);
     }
-  } finally {
-    await browser.close();
+    const successes = results.filter(r => r.success).length;
+    console.log(`[${new Date().toLocaleString()}] Ejecución RAW finalizada. Éxitos: ${successes}/${accountsToRun.length}`);
+    process.exit(successes > 0 || accountsToRun.length > 1 ? 0 : 1);
+  } else {
+    ensureDir(CONFIG.outputDir);
+    const browser = await chromium.launch({ headless: CONFIG.headless });
+    console.log(`[${new Date().toLocaleString()}] Iniciando modo VISUAL para ${accountsToRun.length} cuenta(s) en lotes de ${CONFIG.chunkSize}.`);
+    try {
+      const results = [];
+      for (let i = 0; i < accountsToRun.length; i += CONFIG.chunkSize) {
+        const chunk = accountsToRun.slice(i, i + CONFIG.chunkSize);
+        console.log(`[LOTE VISUAL] Procesando cuentas ${i + 1} a ${Math.min(i + CONFIG.chunkSize, accountsToRun.length)}...`);
+        const chunkPromises = chunk.map(acc => processAccount(browser, acc));
+        const chunkResults = await Promise.all(chunkPromises);
+        results.push(...chunkResults);
+        if (i + CONFIG.chunkSize < accountsToRun.length) await sleep(1500);
+      }
+      
+      const successes = results.filter(r => r.success).length;
+      console.log(`[${new Date().toLocaleString()}] Ejecución VISUAL finalizada. Éxitos: ${successes}/${accountsToRun.length}`);
+      
+      if (successes > 0 || accountsToRun.length > 1) {
+        process.exit(0);
+      } else {
+        process.exit(1);
+      }
+    } finally {
+      await browser.close();
+    }
   }
 }
 
