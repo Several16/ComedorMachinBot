@@ -280,8 +280,9 @@ function isRawRetryable(msg) {
   return RAW_RETRY_KEYWORDS.some(kw => upper.includes(kw));
 }
 
-// Warm-up: sondear la API hasta que responda con éxito o un error NO retryable
-// Esto detecta el momento exacto en que la API abre (7:00 AM)
+// Warm-up: sondear la API hasta que responda con ÉXITO (200/201)
+// LÓGICA CONSERVADORA: solo considerar "API abierta" con éxito real.
+// Respuestas 404, sin message, o ambiguas = API cerrada, seguir sondeando.
 async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
   const maxWait = maxWaitMs || 10 * 60 * 1000; // 10 min máximo de espera
   const probeIntervalMs = 1500; // sondear cada 1.5 segundos
@@ -303,33 +304,47 @@ async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
       });
 
       const json = await res.json();
+      const msg = String(json.message || "").toUpperCase().trim();
 
+      // Log detallado en los primeros 3 intentos y luego cada 10
+      if (attempt <= 3 || attempt % 10 === 0) {
+        console.log(`[WARMUP] Intento ${attempt} (${Math.round((Date.now() - startTime) / 1000)}s): code=${json.code} message="${json.message}"`);
+      }
+
+      // ── ÉXITO: La API abrió y aseguró cupo para la cuenta sonda ──
       if (json.code === 200 || json.code === 201) {
-        // ¡La API abrió y ya aseguró cupo para la cuenta sonda!
         console.log(`[WARMUP] ¡API ABIERTA! Cupo asegurado en sondeo para DNI ${probeAccount.dni} (intento ${attempt}, ${Math.round((Date.now() - startTime) / 1000)}s)`);
         console.log(`[RAW_SUCCESS] DNI: ${probeAccount.dni}`);
         return { open: true, probeSuccess: true, dni: probeAccount.dni };
       }
 
-      const msg = String(json.message || "").toUpperCase();
-      if (isRawRetryable(msg)) {
-        // API aún cerrada o saturada, seguir sondeando
-        if (attempt % 10 === 0) {
-          console.log(`[WARMUP] Intento ${attempt} (${Math.round((Date.now() - startTime) / 1000)}s): ${json.message}`);
-        }
+      // ── API CERRADA: code 404 sin message = formulario no habilitado ──
+      if (json.code === 404 || !msg || msg === "UNDEFINED" || msg === "NULL") {
         await sleep(probeIntervalMs);
         continue;
       }
 
-      // Respuesta no retryable pero tampoco éxito — la API respondió algo nuevo
-      // Podría ser "TICKET YA UTILIZADO" u otro error. La API está activa.
-      console.log(`[WARMUP] API respondió (no retryable): ${json.message}. Considerando API abierta.`);
+      // ── RETRY KEYWORDS: mensajes conocidos de "aún no disponible" ──
+      if (isRawRetryable(msg)) {
+        await sleep(probeIntervalMs);
+        continue;
+      }
+
+      // ── "YA UTILIZADO" = la API está activa, ya tiene ticket previo ──
+      if (msg.includes("YA UTILIZADO")) {
+        console.log(`[WARMUP] API activa — cuenta sonda ya tiene ticket. Lanzando ataque.`);
+        return { open: true, probeSuccess: true, dni: probeAccount.dni };
+      }
+
+      // ── Respuesta con mensaje real no reconocido = API posiblemente activa ──
+      // Solo si el message tiene contenido real (no vacío/undefined)
+      console.log(`[WARMUP] API respondió con mensaje no reconocido: code=${json.code} msg="${json.message}". Considerando API abierta.`);
       return { open: true, probeSuccess: false, dni: probeAccount.dni, reason: json.message };
 
     } catch (e) {
       // Timeout o error de red — API caída o saturadísima, seguir intentando
-      if (attempt % 10 === 0) {
-        console.log(`[WARMUP] Intento ${attempt}: Timeout/Error de red, reintentando...`);
+      if (attempt <= 3 || attempt % 10 === 0) {
+        console.log(`[WARMUP] Intento ${attempt}: Timeout/Error de red (${e.message}), reintentando...`);
       }
       await sleep(probeIntervalMs);
     }
@@ -340,10 +355,12 @@ async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
 }
 
 // Ataque RAW agresivo para UNA cuenta (post-apertura)
+// LÓGICA CONSERVADORA: solo detenerse en éxito real o error fatal con mensaje concreto.
+// Respuestas 404, sin message, o ambiguas = seguir reintentando.
 async function processAccountRawPost(account) {
   const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RAW]`;
-  const maxPostAttempts = 120; // reintentos agresivos post-apertura
-  const retryDelayPostMs = 300; // delay mínimo entre reintentos (300ms)
+  const maxPostAttempts = 150; // reintentos agresivos post-apertura (aumentado)
+  const retryDelayPostMs = 250; // delay mínimo entre reintentos (250ms, más rápido)
 
   for (let attempt = 1; attempt <= maxPostAttempts; attempt += 1) {
     try {
@@ -357,36 +374,44 @@ async function processAccountRawPost(account) {
       });
 
       const json = await res.json();
+      const msg = String(json.message || "").toUpperCase().trim();
 
+      // ── ÉXITO: cupo asegurado ──
       if (json.code === 200 || json.code === 201) {
         console.log(`[RAW_SUCCESS] DNI: ${account.dni}`);
         return { success: true, dni: account.dni };
       }
 
-      const msg = String(json.message || "").toUpperCase();
-
-      // "TICKET YA UTILIZADO" o "CODIGO YA UTILIZADO" = ya tiene cupo, es éxito
+      // ── "YA UTILIZADO" = ya tiene cupo, es éxito ──
       if (msg.includes("YA UTILIZADO")) {
         console.log(`[RAW_SUCCESS] DNI: ${account.dni} (ticket ya existía en BD)`);
         return { success: true, dni: account.dni, note: "Ya tenía ticket" };
       }
 
+      // ── 404 o sin message = API cerrada/no lista, REINTENTAR ──
+      if (json.code === 404 || !msg || msg === "UNDEFINED" || msg === "NULL") {
+        if (attempt % 20 === 0) console.log(`${prefix} Intento ${attempt}: API respondió code=${json.code} sin mensaje, reintentando...`);
+        await sleep(retryDelayPostMs);
+        continue;
+      }
+
+      // ── Keywords retryables conocidos ──
       if (isRawRetryable(msg)) {
         if (attempt % 15 === 0) console.log(`${prefix} Intento ${attempt}: ${json.message}`);
         await sleep(retryDelayPostMs);
         continue;
       }
 
-      // Error fatal no retryable
-      console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: ${json.message}`);
+      // ── Error fatal REAL con mensaje concreto (no vacío, no 404) ──
+      console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: ${json.message} (code=${json.code})`);
       return { success: false, dni: account.dni, reason: json.message };
 
     } catch (e) {
-      if (attempt % 15 === 0) console.log(`${prefix} Intento ${attempt}: Timeout/Error red, reintentando...`);
+      if (attempt % 15 === 0) console.log(`${prefix} Intento ${attempt}: Timeout/Error red (${e.message}), reintentando...`);
       await sleep(retryDelayPostMs);
     }
   }
-  console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Max intentos post-apertura agotado`);
+  console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Max intentos post-apertura agotado (${maxPostAttempts})`);
   return { success: false, dni: account.dni, reason: "Max intentos post-apertura agotado" };
 }
 
