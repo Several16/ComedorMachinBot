@@ -503,8 +503,38 @@ function exitCodeLabel(code) {
 async function notifyJobFinished(exitInfo) {
   if (!NOTIFY_JOB_FINISH || !telegramBotClient || !exitInfo) return;
   const { chatId, code, jobId, pid, logPath } = exitInfo;
-  const label = exitCodeLabel(code);
   const isBatch = !exitInfo.dni && exitInfo.logPath && exitInfo.logPath.includes("tg-");
+  
+  // Para batch, intentar extraer el conteo real de éxitos del log
+  let batchLabel = "";
+  let dniSummary = "";
+  if (isBatch && logPath && fs.existsSync(logPath)) {
+    try {
+      const logText = fs.readFileSync(logPath, "utf8");
+      const summaryMatch = logText.match(/Ejecución (?:RAW|VISUAL) finalizada\. Éxitos: (\d+)\/(\d+)/);
+      if (summaryMatch) {
+        const s = parseInt(summaryMatch[1], 10);
+        const t = parseInt(summaryMatch[2], 10);
+        if (s === t && s > 0) {
+          batchLabel = `✅ Perfecto: ${s}/${t} cupos`;
+        } else if (s > 0) {
+          batchLabel = `⚠️ Parcial: ${s}/${t} cupos`;
+        } else {
+          batchLabel = `❌ Sin cupos: 0/${t}`;
+        }
+      }
+      // Extraer resumen por DNI
+      const resumenLines = logText.match(/\[RAW_RESUMEN\]\s+[✅❌] DNI: .+/g);
+      if (resumenLines && resumenLines.length > 0) {
+        dniSummary = "\n\n📋 *Detalle:*\n" + resumenLines.map(l => {
+          const cleaned = l.replace(/\[RAW_RESUMEN\]\s+/, "");
+          return cleaned;
+        }).join("\n");
+      }
+    } catch {}
+  }
+  
+  const label = batchLabel || exitCodeLabel(code);
   const dniLine = isBatch ? `*Modo:* \`Batch (Múltiples Cuentas)\`` : `*DNI:* \`${exitInfo.dni || "Desconocido"}\``;
   const lines = [
     `🔔 *Reporte de Ejecución*`,
@@ -514,8 +544,11 @@ async function notifyJobFinished(exitInfo) {
     `*Job ID:* \`${jobId}\``,
     `*PID:* ${pid}`,
     `*Código interno:* ${code}`,
-    `*Hora:* ${exitInfo.at}`
+    `*Hora:* ${exitInfo.at}`,
   ];
+  if (dniSummary) {
+    lines.push(dniSummary);
+  }
   try {
     const artifacts = extractLastArtifactPaths(logPath);
     const preferredImage = artifacts.qrPath || artifacts.fullPath;
@@ -525,6 +558,7 @@ async function notifyJobFinished(exitInfo) {
       });
     }
     await telegramBotClient.sendMessage(chatId, lines.join("\n"), {
+      parse_mode: "Markdown",
       reply_markup: userKeyboard(isAdmin(chatId)),
     });
   } catch (error) {
@@ -584,6 +618,7 @@ function startBot(chatId, config) {
     stream.write(text);
     const lines = text.split('\n');
     for (const line of lines) {
+      // ── Ticket visual conseguido en Batch ──
       const match = line.match(/\[BATCH_SUCCESS\] DNI: (\d+).*CAPTURA: ([^|]+).*QR: (.*)/);
       if (match && telegramBotClient) {
         const dni = match[1].trim();
@@ -597,14 +632,38 @@ function startBot(chatId, config) {
           }).catch(()=>{});
         }
       }
+      // ── Cupo RAW asegurado (individual) ──
       const rawMatch = line.match(/\[RAW_SUCCESS\] DNI: (\d+)/);
       if (rawMatch && telegramBotClient) {
         const dni = rawMatch[1].trim();
         telegramBotClient.sendMessage(ownerChatId, `⚡ ¡Cupo asegurado (Modo Crudo)!\nDNI: ${dni}`).catch(()=>{});
       }
-      const rawSummaryMatch = line.match(/Ejecución RAW finalizada\. Éxitos: (\d+\/\d+)/);
+      // ── Fallo RAW individual ──
+      const rawFailMatch = line.match(/\[RAW_FAIL\] DNI: (\d+) \| ERROR: (.+)/);
+      if (rawFailMatch && telegramBotClient) {
+        const dni = rawFailMatch[1].trim();
+        const reason = rawFailMatch[2].trim();
+        telegramBotClient.sendMessage(ownerChatId, `❌ Sin cupo (RAW)\nDNI: ${dni}\nRazón: ${reason}`).catch(()=>{});
+      }
+      // ── Warm-up status ──
+      const warmupOpen = line.match(/\[WARMUP\] .*API ABIERTA/);
+      if (warmupOpen && telegramBotClient) {
+        telegramBotClient.sendMessage(ownerChatId, `🟢 API detectada ABIERTA. Lanzando ataque a todas las cuentas...`).catch(()=>{});
+      }
+      // ── Resumen final de RAW con mensaje HONESTO ──
+      const rawSummaryMatch = line.match(/Ejecución RAW finalizada\. Éxitos: (\d+)\/(\d+)/);
       if (rawSummaryMatch && telegramBotClient) {
-        telegramBotClient.sendMessage(ownerChatId, `🎯 *FASE 1 COMPLETADA (ATAQUE RAW)*\n¡Se han asegurado los cupos directamente en la base de datos! (${rawSummaryMatch[1]}).\n\n_El bot arrancará automáticamente la Fase 2 (Visual) en 20 minutos para recoger las fotos de los QRs._`, {parse_mode: "Markdown"}).catch(()=>{});
+        const successes = parseInt(rawSummaryMatch[1], 10);
+        const total = parseInt(rawSummaryMatch[2], 10);
+        let msg;
+        if (successes > 0 && successes === total) {
+          msg = `🎯 *FASE 1 COMPLETADA (ATAQUE RAW)*\n✅ ¡PERFECTO! Se aseguraron *todos* los cupos: *${successes}/${total}*\n\n_La Fase 2 (Visual) arrancará en 20 min para recoger los QRs._`;
+        } else if (successes > 0) {
+          msg = `🎯 *FASE 1 COMPLETADA (ATAQUE RAW)*\n⚠️ Se aseguraron *${successes}/${total}* cupos.\n${total - successes} cuenta(s) no lograron cupo.\n\n_La Fase 2 (Visual) arrancará en 20 min para recoger los QRs._`;
+        } else {
+          msg = `⚠️ *FASE 1 FINALIZADA (ATAQUE RAW)*\n❌ *0/${total}* cupos asegurados.\nLa API pudo haber estado saturada o no respondió a tiempo.\n\n_La Fase 2 (Visual) intentará obtener cupos en 20 min._`;
+        }
+        telegramBotClient.sendMessage(ownerChatId, msg, {parse_mode: "Markdown"}).catch(()=>{});
       }
     }
   });
@@ -794,7 +853,7 @@ function setupUserCron(chatId) {
         if (!resultRaw.started && telegramBotClient) {
           telegramBotClient.sendMessage(id, `❌ Falló fase cruda: ${resultRaw.reason}`).catch(() => {});
         } else if (telegramBotClient) {
-          telegramBotClient.sendMessage(id, "⏳ Fase Híbrida 1 completa: Extracción visual (QRs) programada en 20 min.").catch(() => {});
+          telegramBotClient.sendMessage(id, "⏳ Fase 1 (RAW) iniciada. Sondeando API hasta que abra... El resultado se notificará al terminar.").catch(() => {});
         }
         
         setTimeout(() => {
@@ -1869,7 +1928,7 @@ bot.on("callback_query", async (query) => {
         if (!resultRaw.started) {
           bot.sendMessage(chatId, `❌ Falló fase cruda: ${resultRaw.reason}`).catch(() => {});
         } else {
-          bot.sendMessage(chatId, "⏳ Fase Híbrida 1 (Cruda) iniciada. Simulando espera visual de 20 min (se lanzará en 1 min para esta prueba)...").catch(() => {});
+          bot.sendMessage(chatId, "⏳ Fase 1 (RAW) iniciada. Sondeando API... Fase 2 visual en 1 min (modo prueba).").catch(() => {});
         }
         
         // En modo prueba, reducimos la espera a 1 minuto en lugar de 20 minutos

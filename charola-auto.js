@@ -269,44 +269,125 @@ async function processAccount(browser, account) {
   }
 }
 
-async function processAccountRaw(account) {
-  const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RAW]`;
-  console.log(`${prefix} Iniciando...`);
-  
-  const formData = new FormData();
-  formData.append("data", JSON.stringify({ t1_dni: account.dni, t1_codigo: account.codigo }));
-  
-  for (let attempt = 1; attempt <= Math.min(CONFIG.maxAttempts, 300); attempt += 1) {
+// ── RAW MODE: Mensajes retryables de la API ──
+const RAW_RETRY_KEYWORDS = [
+  "CUPOS", "HORARIO", "FUERA", "DISPONIBLE", "AGOTADOS",
+  "INTENTE", "MANANA", "NO ENCONTRADO", "NO MATRICULADO"
+];
+
+function isRawRetryable(msg) {
+  const upper = String(msg || "").toUpperCase();
+  return RAW_RETRY_KEYWORDS.some(kw => upper.includes(kw));
+}
+
+// Warm-up: sondear la API hasta que responda con éxito o un error NO retryable
+// Esto detecta el momento exacto en que la API abre (7:00 AM)
+async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
+  const maxWait = maxWaitMs || 10 * 60 * 1000; // 10 min máximo de espera
+  const probeIntervalMs = 1500; // sondear cada 1.5 segundos
+  const startTime = Date.now();
+  let attempt = 0;
+
+  console.log(`[WARMUP] Sondeando API con DNI ${probeAccount.dni} hasta que abra... (máx ${Math.round(maxWait / 1000)}s)`);
+
+  while (Date.now() - startTime < maxWait) {
+    attempt++;
     try {
+      const formData = new FormData();
+      formData.append("data", JSON.stringify({ t1_dni: probeAccount.dni, t1_codigo: probeAccount.codigo }));
+
       const res = await fetch("https://comensales.uncp.edu.pe/api/registros", {
         method: "POST",
         body: formData,
-        signal: AbortSignal.timeout(12000)
+        signal: AbortSignal.timeout(8000)
       });
-      
+
       const json = await res.json();
-      
+
+      if (json.code === 200 || json.code === 201) {
+        // ¡La API abrió y ya aseguró cupo para la cuenta sonda!
+        console.log(`[WARMUP] ¡API ABIERTA! Cupo asegurado en sondeo para DNI ${probeAccount.dni} (intento ${attempt}, ${Math.round((Date.now() - startTime) / 1000)}s)`);
+        console.log(`[RAW_SUCCESS] DNI: ${probeAccount.dni}`);
+        return { open: true, probeSuccess: true, dni: probeAccount.dni };
+      }
+
+      const msg = String(json.message || "").toUpperCase();
+      if (isRawRetryable(msg)) {
+        // API aún cerrada o saturada, seguir sondeando
+        if (attempt % 10 === 0) {
+          console.log(`[WARMUP] Intento ${attempt} (${Math.round((Date.now() - startTime) / 1000)}s): ${json.message}`);
+        }
+        await sleep(probeIntervalMs);
+        continue;
+      }
+
+      // Respuesta no retryable pero tampoco éxito — la API respondió algo nuevo
+      // Podría ser "TICKET YA UTILIZADO" u otro error. La API está activa.
+      console.log(`[WARMUP] API respondió (no retryable): ${json.message}. Considerando API abierta.`);
+      return { open: true, probeSuccess: false, dni: probeAccount.dni, reason: json.message };
+
+    } catch (e) {
+      // Timeout o error de red — API caída o saturadísima, seguir intentando
+      if (attempt % 10 === 0) {
+        console.log(`[WARMUP] Intento ${attempt}: Timeout/Error de red, reintentando...`);
+      }
+      await sleep(probeIntervalMs);
+    }
+  }
+
+  console.log(`[WARMUP] Tiempo máximo de espera agotado (${Math.round(maxWait / 1000)}s). Lanzando ataque de todas formas.`);
+  return { open: false, probeSuccess: false };
+}
+
+// Ataque RAW agresivo para UNA cuenta (post-apertura)
+async function processAccountRawPost(account) {
+  const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RAW]`;
+  const maxPostAttempts = 120; // reintentos agresivos post-apertura
+  const retryDelayPostMs = 300; // delay mínimo entre reintentos (300ms)
+
+  for (let attempt = 1; attempt <= maxPostAttempts; attempt += 1) {
+    try {
+      const formData = new FormData();
+      formData.append("data", JSON.stringify({ t1_dni: account.dni, t1_codigo: account.codigo }));
+
+      const res = await fetch("https://comensales.uncp.edu.pe/api/registros", {
+        method: "POST",
+        body: formData,
+        signal: AbortSignal.timeout(8000)
+      });
+
+      const json = await res.json();
+
       if (json.code === 200 || json.code === 201) {
         console.log(`[RAW_SUCCESS] DNI: ${account.dni}`);
         return { success: true, dni: account.dni };
-      } else {
-        const msg = String(json.message || "").toUpperCase();
-        if (msg.includes("CUPOS") || msg.includes("HORARIO")) {
-          // Aún no abren o saturado
-          if (attempt % 5 === 0) console.log(`${prefix} Intento ${attempt}: ${json.message}`);
-          await sleep(CONFIG.retryDelayMs);
-        } else {
-          // Fatal
-          console.log(`[RAW_FATAL] DNI: ${account.dni} | ERROR: ${json.message}`);
-          return { success: false, dni: account.dni, reason: json.message };
-        }
       }
+
+      const msg = String(json.message || "").toUpperCase();
+
+      // "TICKET YA UTILIZADO" o "CODIGO YA UTILIZADO" = ya tiene cupo, es éxito
+      if (msg.includes("YA UTILIZADO")) {
+        console.log(`[RAW_SUCCESS] DNI: ${account.dni} (ticket ya existía en BD)`);
+        return { success: true, dni: account.dni, note: "Ya tenía ticket" };
+      }
+
+      if (isRawRetryable(msg)) {
+        if (attempt % 15 === 0) console.log(`${prefix} Intento ${attempt}: ${json.message}`);
+        await sleep(retryDelayPostMs);
+        continue;
+      }
+
+      // Error fatal no retryable
+      console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: ${json.message}`);
+      return { success: false, dni: account.dni, reason: json.message };
+
     } catch (e) {
-      if (attempt % 5 === 0) console.log(`${prefix} Intento ${attempt}: Error de red o Timeout, reintentando...`);
-      await sleep(CONFIG.retryDelayMs);
+      if (attempt % 15 === 0) console.log(`${prefix} Intento ${attempt}: Timeout/Error red, reintentando...`);
+      await sleep(retryDelayPostMs);
     }
   }
-  return { success: false, dni: account.dni, reason: "Max intentos alcanzado" };
+  console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Max intentos post-apertura agotado`);
+  return { success: false, dni: account.dni, reason: "Max intentos post-apertura agotado" };
 }
 
 async function main() {
@@ -325,17 +406,55 @@ async function main() {
 
   if (CONFIG.execMode === "raw") {
     console.log(`[${new Date().toLocaleString()}] Iniciando modo RAW para ${accountsToRun.length} cuenta(s).`);
-    const chunkSize = 15;
-    const results = [];
-    for (let i = 0; i < accountsToRun.length; i += chunkSize) {
-      const chunk = accountsToRun.slice(i, i + chunkSize);
-      const chunkResults = await Promise.all(chunk.map(acc => processAccountRaw(acc)));
-      results.push(...chunkResults);
-      if (i + chunkSize < accountsToRun.length) await sleep(500);
+
+    // ── FASE A: Warm-up — esperar a que la API abra ──
+    const probeAccount = accountsToRun[0];
+    const warmup = await warmUpWaitForApiOpen(probeAccount, 10 * 60 * 1000);
+
+    // Determinar qué cuentas aún necesitan ataque
+    let pendingAccounts;
+    if (warmup.probeSuccess) {
+      // La cuenta sonda ya consiguió cupo durante el warm-up
+      pendingAccounts = accountsToRun.filter(a => a.dni !== probeAccount.dni);
+      console.log(`[RAW] Cuenta sonda (${probeAccount.dni}) ya asegurada. Atacando ${pendingAccounts.length} restantes...`);
+    } else {
+      pendingAccounts = [...accountsToRun];
+      console.log(`[RAW] API ${warmup.open ? 'abierta' : 'estado desconocido'}. Atacando TODAS las ${pendingAccounts.length} cuentas simultáneamente...`);
     }
+
+    // ── FASE B: Ataque simultáneo de TODAS las cuentas ──
+    const results = [];
+    if (warmup.probeSuccess) {
+      results.push({ success: true, dni: probeAccount.dni });
+    }
+
+    if (pendingAccounts.length > 0) {
+      // Lanzar TODAS las cuentas al mismo tiempo, sin chunks
+      const attackPromises = pendingAccounts.map(acc => processAccountRawPost(acc));
+      const attackResults = await Promise.all(attackPromises);
+      results.push(...attackResults);
+    }
+
+    // ── Resumen final ──
     const successes = results.filter(r => r.success).length;
+    const failures = results.filter(r => !r.success);
+    
+    // Imprimir resumen detallado
+    console.log(`\n[RAW_RESUMEN] ═══════════════════════════════`);
+    console.log(`[RAW_RESUMEN] Total: ${accountsToRun.length} | Éxitos: ${successes} | Fallos: ${failures.length}`);
+    for (const r of results) {
+      if (r.success) {
+        console.log(`[RAW_RESUMEN]   ✅ DNI: ${r.dni}`);
+      } else {
+        console.log(`[RAW_RESUMEN]   ❌ DNI: ${r.dni} → ${r.reason || 'desconocido'}`);
+      }
+    }
+    console.log(`[RAW_RESUMEN] ═══════════════════════════════\n`);
+
     console.log(`[${new Date().toLocaleString()}] Ejecución RAW finalizada. Éxitos: ${successes}/${accountsToRun.length}`);
-    process.exit(successes > 0 || accountsToRun.length > 1 ? 0 : 1);
+    
+    // EXIT CODE HONESTO: 0 solo si al menos 1 cupo asegurado
+    process.exit(successes > 0 ? 0 : 1);
   } else {
     ensureDir(CONFIG.outputDir);
     const browser = await chromium.launch({ headless: CONFIG.headless });
@@ -354,11 +473,8 @@ async function main() {
       const successes = results.filter(r => r.success).length;
       console.log(`[${new Date().toLocaleString()}] Ejecución VISUAL finalizada. Éxitos: ${successes}/${accountsToRun.length}`);
       
-      if (successes > 0 || accountsToRun.length > 1) {
-        process.exit(0);
-      } else {
-        process.exit(1);
-      }
+      // EXIT CODE HONESTO: 0 solo si al menos 1 cupo asegurado
+      process.exit(successes > 0 ? 0 : 1);
     } finally {
       await browser.close();
     }
