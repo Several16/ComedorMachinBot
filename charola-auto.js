@@ -415,6 +415,60 @@ async function processAccountRawPost(account) {
   return { success: false, dni: account.dni, reason: "Max intentos post-apertura agotado" };
 }
 
+// Rescate: reintentos individuales con más paciencia para cuentas que fallaron en Fase 1
+async function processAccountRawRescue(account) {
+  const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RESCATE]`;
+  const maxRescueAttempts = 80;
+  const rescueDelayMs = 1000; // 1 segundo entre intentos (más calma)
+  const rescueTimeoutMs = 15000; // timeout HTTP de 15s (más paciencia)
+
+  console.log(`${prefix} Iniciando rescate (${maxRescueAttempts} intentos, ${rescueDelayMs}ms delay)...`);
+
+  for (let attempt = 1; attempt <= maxRescueAttempts; attempt += 1) {
+    try {
+      const formData = new FormData();
+      formData.append("data", JSON.stringify({ t1_dni: account.dni, t1_codigo: account.codigo }));
+
+      const res = await fetch("https://comensales.uncp.edu.pe/api/registros", {
+        method: "POST",
+        body: formData,
+        signal: AbortSignal.timeout(rescueTimeoutMs)
+      });
+
+      const json = await res.json();
+      const msg = String(json.message || "").toUpperCase().trim();
+
+      if (json.code === 200 || json.code === 201) {
+        console.log(`[RAW_SUCCESS] DNI: ${account.dni} (rescatado en intento ${attempt})`);
+        return { success: true, dni: account.dni, note: "Rescatado en Fase 2" };
+      }
+
+      if (msg.includes("YA UTILIZADO")) {
+        console.log(`[RAW_SUCCESS] DNI: ${account.dni} (rescate: ticket ya existía)`);
+        return { success: true, dni: account.dni, note: "Ya tenía ticket" };
+      }
+
+      // Si la API devuelve un mensaje de cupos agotados, no tiene sentido seguir
+      if (msg.includes("AGOTADOS") || msg.includes("SIN CUPOS")) {
+        console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Cupos agotados (rescate)`);
+        return { success: false, dni: account.dni, reason: "Cupos agotados" };
+      }
+
+      if (attempt % 10 === 0) {
+        console.log(`${prefix} Intento ${attempt}/${maxRescueAttempts}: code=${json.code} msg="${json.message || 'sin mensaje'}"`);
+      }
+
+      await sleep(rescueDelayMs);
+
+    } catch (e) {
+      if (attempt % 10 === 0) console.log(`${prefix} Intento ${attempt}: ${e.message}`);
+      await sleep(rescueDelayMs);
+    }
+  }
+  console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Rescate agotado (${maxRescueAttempts} intentos)`);
+  return { success: false, dni: account.dni, reason: "Rescate agotado" };
+}
+
 async function main() {
   let accountsToRun = [];
   if (CONFIG.accountsJson) {
@@ -447,17 +501,40 @@ async function main() {
       console.log(`[RAW] API ${warmup.open ? 'abierta' : 'estado desconocido'}. Atacando TODAS las ${pendingAccounts.length} cuentas simultáneamente...`);
     }
 
-    // ── FASE B: Ataque simultáneo de TODAS las cuentas ──
+    // ── FASE B: Ataque escalonado (50ms entre cada cuenta) ──
+    const STAGGER_DELAY_MS = 50; // desfase entre cada cuenta para evitar lock de BD
     const results = [];
     if (warmup.probeSuccess) {
       results.push({ success: true, dni: probeAccount.dni });
     }
 
     if (pendingAccounts.length > 0) {
-      // Lanzar TODAS las cuentas al mismo tiempo, sin chunks
-      const attackPromises = pendingAccounts.map(acc => processAccountRawPost(acc));
+      // Lanzar cuentas con desfase de 50ms entre cada una
+      console.log(`[RAW] Lanzando ${pendingAccounts.length} cuentas con desfase de ${STAGGER_DELAY_MS}ms (~${Math.round(pendingAccounts.length * STAGGER_DELAY_MS / 1000 * 10) / 10}s total)...`);
+      const attackPromises = pendingAccounts.map((acc, index) => {
+        return new Promise(resolve => {
+          setTimeout(() => {
+            processAccountRawPost(acc).then(resolve);
+          }, index * STAGGER_DELAY_MS);
+        });
+      });
       const attackResults = await Promise.all(attackPromises);
       results.push(...attackResults);
+    }
+
+    // ── FASE C: Rescate — reintentar las que fallaron, una por una ──
+    const phase1Failures = results.filter(r => !r.success);
+    if (phase1Failures.length > 0) {
+      console.log(`[RAW_RESCATE] ${phase1Failures.length} cuenta(s) fallaron en Fase 1. Reintentando individualmente...`);
+      for (const fail of phase1Failures) {
+        const account = pendingAccounts.find(a => a.dni === fail.dni);
+        if (!account) continue;
+        console.log(`[RAW_RESCATE] Reintentando DNI: ${account.dni} con delays más largos...`);
+        const rescue = await processAccountRawRescue(account);
+        // Reemplazar el resultado fallido con el de rescate
+        const idx = results.findIndex(r => r.dni === fail.dni);
+        if (idx !== -1) results[idx] = rescue;
+      }
     }
 
     // ── Resumen final ──
