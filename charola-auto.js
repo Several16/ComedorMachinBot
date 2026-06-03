@@ -374,8 +374,8 @@ async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
 // Respuestas 404, sin message, o ambiguas = seguir reintentando.
 async function processAccountRawPost(account) {
   const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RAW]`;
-  const maxPostAttempts = 150; // reintentos agresivos post-apertura (aumentado)
-  const retryDelayPostMs = 250; // delay mínimo entre reintentos (250ms, más rápido)
+  const maxPostAttempts = 50; // 50 intentos × 100ms = 5s (toda la ventana de cupos)
+  const retryDelayPostMs = 100; // 100ms entre reintentos (máxima velocidad dentro de la ventana)
 
   for (let attempt = 1; attempt <= maxPostAttempts; attempt += 1) {
     try {
@@ -440,8 +440,8 @@ async function processAccountRawPost(account) {
 // Rescate: reintentos individuales con más paciencia para cuentas que fallaron en Fase 1
 async function processAccountRawRescue(account) {
   const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RESCATE]`;
-  const maxRescueAttempts = 80;
-  const rescueDelayMs = 1000; // 1 segundo entre intentos (más calma)
+  const maxRescueAttempts = 15;
+  const rescueDelayMs = 500; // 500ms entre intentos (rápido, cupos aún podrían existir)
   const rescueTimeoutMs = 15000; // timeout HTTP de 15s (más paciencia)
 
   console.log(`${prefix} Iniciando rescate (${maxRescueAttempts} intentos, ${rescueDelayMs}ms delay)...`);
@@ -523,8 +523,8 @@ async function main() {
       console.log(`[RAW] API ${warmup.open ? 'abierta' : 'estado desconocido'}. Atacando TODAS las ${pendingAccounts.length} cuentas simultáneamente...`);
     }
 
-    // ── FASE B: Ataque escalonado (50ms entre cada cuenta) ──
-    const STAGGER_DELAY_MS = 50; // desfase entre cada cuenta para evitar lock de BD
+    // ── FASE B: Ataque escalonado (30ms entre cada cuenta) ──
+    const STAGGER_DELAY_MS = 30; // desfase mínimo entre cuentas (40 cuentas = 1.2s)
     const results = [];
     if (warmup.probeSuccess) {
       results.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre });
@@ -547,7 +547,9 @@ async function main() {
     // ── FASE C: Rescate — reintentar las que fallaron, una por una ──
     const phase1Failures = results.filter(r => !r.success);
     if (phase1Failures.length > 0) {
-      console.log(`[RAW_RESCATE] ${phase1Failures.length} cuenta(s) fallaron en Fase 1. Reintentando individualmente...`);
+      console.log(`[RAW_RESCATE] ${phase1Failures.length} cuenta(s) fallaron en Fase 1. Esperando 3s...`);
+      await sleep(3000); // pausa corta — cupos pueden seguir disponibles
+      console.log(`[RAW_RESCATE] Reintentando individualmente...`);
       for (const fail of phase1Failures) {
         const account = pendingAccounts.find(a => a.dni === fail.dni);
         if (!account) continue;
