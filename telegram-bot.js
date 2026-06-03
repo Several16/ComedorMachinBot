@@ -590,7 +590,7 @@ function startBot(chatId, config) {
   env.CHAROLA_AFTER_SUBMIT_WAIT_MS = String(safeNumber(config.afterSubmitWaitMs, 6000));
   env.CHAROLA_TURBO_MODE = config.turboMode === false ? "false" : "true";
   env.CHAROLA_HEADLESS = config.headless === false ? "false" : "true";
-  env.CHAROLA_EXECUTION_MODE = config.execMode || "visual";
+  env.CHAROLA_EXECUTION_MODE = config.execMode || "raw";
 
   const jobId = generateJobId(ownerChatId);
   const logPath = path.join(LOGS_DIR, `tg-${ownerChatId}-${stamp()}-${jobId}.log`);
@@ -750,7 +750,7 @@ function getAutoMenuPayload(chatId) {
     `*Inicio real:* ${startAt} (Lima)`,
     `*Próxima ejecución:* ${auto.enabled ? nextAutoRunLabel(auto.time) : "-"}`,
     `*Cuentas registradas:* ${Array.isArray(auto.accounts) ? auto.accounts.length : 0} cuenta(s)`, // Cambiado de Credenciales
-    `*Estrategia:* ${auto.execMode === 'raw_hybrid' ? "🚀 Híbrido (Crudo + Foto)" : "🎭 Playwright (Clásico)"}`,
+    `*Estrategia:* 🚀 Híbrido (Crudo + Foto)`,
     `*Modo:* ${auto.turboMode ? "⚡ TURBO" : "🐢 NORMAL"}`,
     "",
     "Selecciona una acción:",
@@ -765,10 +765,7 @@ function getAutoMenuPayload(chatId) {
         ],
         [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }, { text: "➕ Añadir Cuenta", callback_data: "cron_credentials" }],
         [{ text: "📋 Ver / Borrar Cuentas", callback_data: "cron_manage_accounts" }],
-        [
-          { text: `⚡ Modo: ${auto.turboMode ? "TURBO" : "NORMAL"}`, callback_data: "cron_mode" },
-          { text: `⚙️ ${auto.execMode === 'raw_hybrid' ? "HÍBRIDO" : "PLAYWRIGHT"}`, callback_data: "cron_exec_mode" }
-        ],
+        [{ text: `⚡ Modo: ${auto.turboMode ? "TURBO" : "NORMAL"}`, callback_data: "cron_mode" }],
       ],
     },
   };
@@ -1936,10 +1933,8 @@ bot.on("callback_query", async (query) => {
       await bot.answerCallbackQuery(query.id, { text: `Modo cambiado a ${u.autoRun.turboMode ? "TURBO" : "NORMAL"}` });
       await renderAutoMenu(bot, chatId, query.message.message_id);
     } else if (data === "cron_exec_mode") {
-      u.autoRun.execMode = u.autoRun.execMode === 'raw_hybrid' ? 'visual' : 'raw_hybrid';
-      saveState();
-      await bot.answerCallbackQuery(query.id, { text: `Estrategia cambiada a ${u.autoRun.execMode === 'raw_hybrid' ? 'HÍBRIDO' : 'PLAYWRIGHT'}` });
-      await renderAutoMenu(bot, chatId, query.message.message_id);
+      // Modo Playwright eliminado — siempre híbrido
+      await bot.answerCallbackQuery(query.id, { text: "El modo siempre es Híbrido (Crudo + Foto).", show_alert: true });
     } else if (data === "cron_run_now") {
       if (!hasAutoCredentials(u.autoRun)) {
         await bot.answerCallbackQuery(query.id, { text: "Faltan cuentas.", show_alert: true });

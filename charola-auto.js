@@ -232,6 +232,9 @@ async function processAccount(browser, account) {
   });
   const page = await context.newPage();
 
+  const MAX_CONSECUTIVE_NO_CUPOS = 30; // límite inteligente: 30 "sin cupos" seguidos = parar
+  let consecutiveNoCupos = 0;
+
   try {
     for (let attempt = 1; attempt <= CONFIG.maxAttempts; attempt += 1) {
       const result = await runAttempt(page, attempt, account);
@@ -247,12 +250,24 @@ async function processAccount(browser, account) {
 
       if (result.status === "success") {
         console.log(`[BATCH_SUCCESS] DNI: ${account.dni} | CAPTURA: ${result.artifacts.fullPath} | QR: ${result.artifacts.qrPath || 'null'}`);
-        return { success: true, dni: account.dni };
+        return { success: true, dni: account.dni, nombre: account.nombre };
       }
 
       if (result.status === "fatal") {
         console.log(`[BATCH_FATAL] DNI: ${account.dni} | ERROR: ${result.reason}`);
-        return { success: false, dni: account.dni, reason: result.reason };
+        return { success: false, dni: account.dni, nombre: account.nombre, reason: result.reason };
+      }
+
+      // ── Límite inteligente: detectar cupos agotados ──
+      const reasonUpper = (result.reason || "").toUpperCase();
+      if (reasonUpper.includes("SIN CUPOS") || reasonUpper.includes("NO DISPONIBLE") || reasonUpper.includes("AGOTADOS")) {
+        consecutiveNoCupos++;
+        if (consecutiveNoCupos >= MAX_CONSECUTIVE_NO_CUPOS) {
+          console.log(`[BATCH_SMART_STOP] DNI: ${account.dni} | ${consecutiveNoCupos} intentos consecutivos sin cupos. Cupos agotados, deteniendo.`);
+          return { success: false, dni: account.dni, nombre: account.nombre, reason: "Cupos agotados (límite inteligente)" };
+        }
+      } else {
+        consecutiveNoCupos = 0; // reset si recibe otra respuesta
       }
 
       if (attempt < CONFIG.maxAttempts) {
@@ -260,10 +275,10 @@ async function processAccount(browser, account) {
         await sleep(delay);
       }
     }
-    return { success: false, dni: account.dni, reason: "Max intentos alcanzado" };
+    return { success: false, dni: account.dni, nombre: account.nombre, reason: "Max intentos alcanzado" };
   } catch (error) {
     console.error(`[DNI: ${account.dni}] Error crítico: ${error.message}`);
-    return { success: false, dni: account.dni, reason: error.message };
+    return { success: false, dni: account.dni, nombre: account.nombre, reason: error.message };
   } finally {
     await context.close();
   }
