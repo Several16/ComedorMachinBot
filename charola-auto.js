@@ -379,13 +379,13 @@ async function processAccountRawPost(account) {
       // ── ÉXITO: cupo asegurado ──
       if (json.code === 200 || json.code === 201) {
         console.log(`[RAW_SUCCESS] DNI: ${account.dni}`);
-        return { success: true, dni: account.dni };
+        return { success: true, dni: account.dni, nombre: account.nombre };
       }
 
       // ── "YA UTILIZADO" = ya tiene cupo, es éxito ──
       if (msg.includes("YA UTILIZADO")) {
         console.log(`[RAW_SUCCESS] DNI: ${account.dni} (ticket ya existía en BD)`);
-        return { success: true, dni: account.dni, note: "Ya tenía ticket" };
+        return { success: true, dni: account.dni, nombre: account.nombre, note: "Ya tenía ticket" };
       }
 
       // ── 404 o sin message = API cerrada/no lista, REINTENTAR ──
@@ -402,9 +402,16 @@ async function processAccountRawPost(account) {
         continue;
       }
 
-      // ── Error fatal REAL con mensaje concreto (no vacío, no 404) ──
+      // ── HTTP 500 = error interno del servidor (lock de BD, saturación) → REINTENTAR ──
+      if (json.code === 500) {
+        if (attempt % 10 === 0) console.log(`${prefix} Intento ${attempt}: code=500 msg="${json.message || 'sin mensaje'}", reintentando...`);
+        await sleep(retryDelayPostMs);
+        continue;
+      }
+
+      // ── Error fatal REAL con mensaje concreto (no vacío, no 404, no 500) ──
       console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: ${json.message} (code=${json.code})`);
-      return { success: false, dni: account.dni, reason: json.message };
+      return { success: false, dni: account.dni, nombre: account.nombre, reason: json.message };
 
     } catch (e) {
       if (attempt % 15 === 0) console.log(`${prefix} Intento ${attempt}: Timeout/Error red (${e.message}), reintentando...`);
@@ -412,7 +419,7 @@ async function processAccountRawPost(account) {
     }
   }
   console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Max intentos post-apertura agotado (${maxPostAttempts})`);
-  return { success: false, dni: account.dni, reason: "Max intentos post-apertura agotado" };
+  return { success: false, dni: account.dni, nombre: account.nombre, reason: "Max intentos post-apertura agotado" };
 }
 
 // Rescate: reintentos individuales con más paciencia para cuentas que fallaron en Fase 1
@@ -440,18 +447,18 @@ async function processAccountRawRescue(account) {
 
       if (json.code === 200 || json.code === 201) {
         console.log(`[RAW_SUCCESS] DNI: ${account.dni} (rescatado en intento ${attempt})`);
-        return { success: true, dni: account.dni, note: "Rescatado en Fase 2" };
+        return { success: true, dni: account.dni, nombre: account.nombre, note: "Rescatado en Fase 2" };
       }
 
       if (msg.includes("YA UTILIZADO")) {
         console.log(`[RAW_SUCCESS] DNI: ${account.dni} (rescate: ticket ya existía)`);
-        return { success: true, dni: account.dni, note: "Ya tenía ticket" };
+        return { success: true, dni: account.dni, nombre: account.nombre, note: "Ya tenía ticket" };
       }
 
       // Si la API devuelve un mensaje de cupos agotados, no tiene sentido seguir
       if (msg.includes("AGOTADOS") || msg.includes("SIN CUPOS")) {
         console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Cupos agotados (rescate)`);
-        return { success: false, dni: account.dni, reason: "Cupos agotados" };
+        return { success: false, dni: account.dni, nombre: account.nombre, reason: "Cupos agotados" };
       }
 
       if (attempt % 10 === 0) {
@@ -466,7 +473,7 @@ async function processAccountRawRescue(account) {
     }
   }
   console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Rescate agotado (${maxRescueAttempts} intentos)`);
-  return { success: false, dni: account.dni, reason: "Rescate agotado" };
+  return { success: false, dni: account.dni, nombre: account.nombre, reason: "Rescate agotado" };
 }
 
 async function main() {
@@ -505,7 +512,7 @@ async function main() {
     const STAGGER_DELAY_MS = 50; // desfase entre cada cuenta para evitar lock de BD
     const results = [];
     if (warmup.probeSuccess) {
-      results.push({ success: true, dni: probeAccount.dni });
+      results.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre });
     }
 
     if (pendingAccounts.length > 0) {
@@ -545,10 +552,11 @@ async function main() {
     console.log(`\n[RAW_RESUMEN] ═══════════════════════════════`);
     console.log(`[RAW_RESUMEN] Total: ${accountsToRun.length} | Éxitos: ${successes} | Fallos: ${failures.length}`);
     for (const r of results) {
+      const label = r.nombre ? `${r.nombre} (${r.dni})` : `DNI: ${r.dni}`;
       if (r.success) {
-        console.log(`[RAW_RESUMEN]   ✅ DNI: ${r.dni}`);
+        console.log(`[RAW_RESUMEN]   ✅ ${label}`);
       } else {
-        console.log(`[RAW_RESUMEN]   ❌ DNI: ${r.dni} → ${r.reason || 'desconocido'}`);
+        console.log(`[RAW_RESUMEN]   ❌ ${label} → ${r.reason || 'desconocido'}`);
       }
     }
     console.log(`[RAW_RESUMEN] ═══════════════════════════════\n`);

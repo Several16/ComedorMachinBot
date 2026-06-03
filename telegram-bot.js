@@ -524,7 +524,7 @@ async function notifyJobFinished(exitInfo) {
         }
       }
       // Extraer resumen por DNI
-      const resumenLines = logText.match(/\[RAW_RESUMEN\]\s+[✅❌] DNI: .+/g);
+      const resumenLines = logText.match(/\[RAW_RESUMEN\]\s+[✅❌] .+/g);
       if (resumenLines && resumenLines.length > 0) {
         dniSummary = "\n\n📋 *Detalle:*\n" + resumenLines.map(l => {
           const cleaned = l.replace(/\[RAW_RESUMEN\]\s+/, "");
@@ -629,6 +629,7 @@ function startBot(chatId, config) {
         if (fs.existsSync(pref)) {
           telegramBotClient.sendPhoto(ownerChatId, fs.createReadStream(pref), {
             caption: `✅ Ticket conseguido en Batch!\nDNI: ${dni}\nJob: ${jobId}`
+
           }).catch(()=>{});
         }
       }
@@ -1218,7 +1219,7 @@ async function handleFlowInput(bot, msg) {
       flow.data.dni = dni;
       flow.step = "codigo";
       setFlow(chatId, flow);
-      await bot.sendMessage(chatId, "2/2 Envíame tu código (ejemplo: 2023200615D).", { reply_markup: cancelKeyboard() });
+      await bot.sendMessage(chatId, "2/3 Envíame tu código (ejemplo: 2023200615D).", { reply_markup: cancelKeyboard() });
       return true;
     }
     if (flow.step === "codigo") {
@@ -1227,15 +1228,46 @@ async function handleFlowInput(bot, msg) {
         await bot.sendMessage(chatId, "Código inválido.", { reply_markup: cancelKeyboard() });
         return true;
       }
+      flow.data.codigo = codigo;
+      flow.step = "nombre";
+      setFlow(chatId, flow);
+      await bot.sendMessage(chatId, "3/3 Envíame un nombre o etiqueta para esta cuenta (ejemplo: Juan Pérez).", { reply_markup: cancelKeyboard() });
+      return true;
+    }
+    if (flow.step === "nombre") {
+      const nombre = text.trim();
+      if (nombre.length < 1) {
+        await bot.sendMessage(chatId, "Nombre inválido. Escribe al menos 1 carácter.", { reply_markup: cancelKeyboard() });
+        return true;
+      }
       clearFlow(chatId);
       const u = ensureUserAutoRun(chatId);
       if (!Array.isArray(u.autoRun.accounts)) u.autoRun.accounts = [];
-      u.autoRun.accounts.push({ dni: flow.data.dni, codigo });
+      u.autoRun.accounts.push({ dni: flow.data.dni, codigo: flow.data.codigo, nombre });
       saveState();
       setupUserCron(chatId);
-      await bot.sendMessage(chatId, `✅ Cuenta añadida. DNI: ${flow.data.dni}. Total cuentas: ${u.autoRun.accounts.length}`, { reply_markup: userKeyboard(admin) });
+      await bot.sendMessage(chatId, `✅ Cuenta añadida.\n👤 ${nombre}\n🪪 DNI: ${flow.data.dni}\nTotal cuentas: ${u.autoRun.accounts.length}`, { reply_markup: userKeyboard(admin) });
       return true;
     }
+  }
+
+  if (flow.type === "rename_account") {
+    const nombre = text.trim();
+    if (nombre.length < 1) {
+      await bot.sendMessage(chatId, "Nombre inválido. Escribe al menos 1 carácter.", { reply_markup: cancelKeyboard() });
+      return true;
+    }
+    clearFlow(chatId);
+    const u = ensureUserAutoRun(chatId);
+    const idx = flow.data.index;
+    if (Array.isArray(u.autoRun.accounts) && u.autoRun.accounts[idx]) {
+      u.autoRun.accounts[idx].nombre = nombre;
+      saveState();
+      await bot.sendMessage(chatId, `✅ Etiqueta actualizada.\n👤 ${nombre}\n🪪 DNI: ${u.autoRun.accounts[idx].dni}`, { reply_markup: userKeyboard(admin) });
+    } else {
+      await bot.sendMessage(chatId, "❌ Cuenta no encontrada.", { reply_markup: userKeyboard(admin) });
+    }
+    return true;
   }
 
   if (flow.type === "activate_code") {
@@ -1859,7 +1891,19 @@ bot.on("callback_query", async (query) => {
     } else if (data === "cron_credentials") {
       setFlow(chatId, { type: "cron_credentials", step: "dni", data: {} });
       await bot.answerCallbackQuery(query.id);
-      await bot.sendMessage(chatId, "Vamos a configurar tus datos automáticos.\n1/2 Envíame tu DNI (solo números).", { reply_markup: cancelKeyboard() });
+      await bot.sendMessage(chatId, "Vamos a configurar tus datos automáticos.\n1/3 Envíame tu DNI (solo números).", { reply_markup: cancelKeyboard() });
+    } else if (data.startsWith("edit_acc_")) {
+      const index = parseInt(data.replace("edit_acc_", ""), 10);
+      const accs = u.autoRun.accounts || [];
+      if (!isNaN(index) && accs[index]) {
+        setFlow(chatId, { type: "rename_account", data: { index } });
+        await bot.answerCallbackQuery(query.id);
+        const acc = accs[index];
+        const currentName = acc.nombre || "(sin nombre)";
+        await bot.sendMessage(chatId, `✏️ Editando etiqueta de *DNI: ${acc.dni}*\nNombre actual: *${currentName}*\n\nEscribe el nuevo nombre:`, { parse_mode: "Markdown", reply_markup: cancelKeyboard() });
+      } else {
+        await bot.answerCallbackQuery(query.id, { text: "Cuenta no encontrada.", show_alert: true });
+      }
     } else if (data === "cron_manage_accounts") {
       const accs = u.autoRun.accounts || [];
       if (!accs.length) {
@@ -1868,13 +1912,14 @@ bot.on("callback_query", async (query) => {
       }
       
       const keyboard = accs.map((a, i) => ([
-        { text: `DNI: ${a.dni}`, callback_data: "ignore" },
-        { text: "🗑️ Borrar", callback_data: `del_acc_${i}` }
+        { text: `${a.nombre || a.dni}`, callback_data: "ignore" },
+        { text: "✏️", callback_data: `edit_acc_${i}` },
+        { text: "🗑️", callback_data: `del_acc_${i}` }
       ]));
       keyboard.push([{ text: "🔙 Volver", callback_data: "cmd_auto" }]);
 
       await bot.answerCallbackQuery(query.id);
-      await bot.editMessageText("📋 *Gestión de Cuentas*\nSelecciona el botón de borrar al lado de la cuenta que deseas eliminar:", {
+      await bot.editMessageText("📋 *Gestión de Cuentas*\n✏️ = Cambiar nombre | 🗑️ = Borrar\n\nSelecciona una acción:", {
         chat_id: chatId,
         message_id: query.message.message_id,
         parse_mode: "Markdown",
