@@ -523,8 +523,8 @@ async function main() {
       console.log(`[RAW] API ${warmup.open ? 'abierta' : 'estado desconocido'}. Atacando TODAS las ${pendingAccounts.length} cuentas simultáneamente...`);
     }
 
-    // ── FASE B: Ataque escalonado (50ms entre cada cuenta) ──
-    const STAGGER_DELAY_MS = 50; // desfase entre cada cuenta
+    // ── FASE B: Ataque simultáneo (todas a la vez) ──
+    const STAGGER_DELAY_MS = 0; // sin desfase — todas las cuentas al mismo instante
     const results = [];
     if (warmup.probeSuccess) {
       results.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre });
