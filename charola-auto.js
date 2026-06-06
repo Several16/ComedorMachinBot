@@ -524,7 +524,7 @@ async function main() {
     }
 
     // ── FASE B: Ataque en 2 oleadas (sin stagger, 1s entre oleadas) ──
-    const WAVE_DELAY_MS = 1000; // pausa entre oleadas
+    const WAVE_DELAY_MS = 500; // pausa entre oleadas (0.5s)
     const results = [];
     if (warmup.probeSuccess) {
       results.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre });
