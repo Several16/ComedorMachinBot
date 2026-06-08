@@ -523,41 +523,39 @@ async function main() {
       console.log(`[RAW] API ${warmup.open ? 'abierta' : 'estado desconocido'}. Atacando TODAS las ${pendingAccounts.length} cuentas simultáneamente...`);
     }
 
-    // ── FASE B: Ataque en 2 oleadas (sin stagger, 1s entre oleadas) ──
-    const WAVE_DELAY_MS = 500; // pausa entre oleadas (0.5s)
+    // ── FASE B: Ataque en oleadas de máx 4 cuentas, lanzadas con 500ms de separación ──
+    // IMPORTANTE: las oleadas se lanzan SIN esperar a que la anterior termine.
+    // Así oleada 2 no espera 37s de reintentos fallidos de oleada 1.
+    const WAVE_SIZE = 4; // máx 4 cuentas por oleada (evita deadlock del servidor)
+    const WAVE_DELAY_MS = 500; // 500ms entre oleadas
     const results = [];
     if (warmup.probeSuccess) {
       results.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre });
     }
 
     if (pendingAccounts.length > 0) {
-      const mid = Math.ceil(pendingAccounts.length / 2);
-      const wave1 = pendingAccounts.slice(0, mid);
-      const wave2 = pendingAccounts.slice(mid);
-
-      // Oleada 1
-      console.log(`[RAW] ═══ OLEADA 1: ${wave1.length} cuentas TODAS A LA VEZ ═══`);
-      const wave1Promises = wave1.map(acc => processAccountRawPost(acc));
-      const wave1Results = await Promise.all(wave1Promises);
-      results.push(...wave1Results);
-
-      const wave1Success = wave1Results.filter(r => r.success).length;
-      console.log(`[RAW] Oleada 1 finalizada: ${wave1Success}/${wave1.length} éxitos`);
-
-      // Pausa entre oleadas
-      if (wave2.length > 0) {
-        console.log(`[RAW] Esperando ${WAVE_DELAY_MS}ms antes de oleada 2...`);
-        await sleep(WAVE_DELAY_MS);
-
-        // Oleada 2
-        console.log(`[RAW] ═══ OLEADA 2: ${wave2.length} cuentas TODAS A LA VEZ ═══`);
-        const wave2Promises = wave2.map(acc => processAccountRawPost(acc));
-        const wave2Results = await Promise.all(wave2Promises);
-        results.push(...wave2Results);
-
-        const wave2Success = wave2Results.filter(r => r.success).length;
-        console.log(`[RAW] Oleada 2 finalizada: ${wave2Success}/${wave2.length} éxitos`);
+      // Dividir en oleadas de máx WAVE_SIZE
+      const waves = [];
+      for (let i = 0; i < pendingAccounts.length; i += WAVE_SIZE) {
+        waves.push(pendingAccounts.slice(i, i + WAVE_SIZE));
       }
+
+      console.log(`[RAW] Dividiendo ${pendingAccounts.length} cuentas en ${waves.length} oleada(s) de máx ${WAVE_SIZE}...`);
+
+      // Lanzar TODAS las oleadas concurrentemente, con delay entre cada una
+      const allWavePromises = waves.map((wave, w) => {
+        return (async () => {
+          if (w > 0) await sleep(w * WAVE_DELAY_MS);
+          console.log(`[RAW] ═══ OLEADA ${w + 1}/${waves.length}: ${wave.length} cuentas ═══`);
+          const waveResults = await Promise.all(wave.map(acc => processAccountRawPost(acc)));
+          const successes = waveResults.filter(r => r.success).length;
+          console.log(`[RAW] Oleada ${w + 1} finalizada: ${successes}/${wave.length} éxitos`);
+          return waveResults;
+        })();
+      });
+
+      const allWaveResults = await Promise.all(allWavePromises);
+      for (const wr of allWaveResults) results.push(...wr);
     }
 
     // ── FASE C: Rescate — reintentar las que fallaron, una por una ──
