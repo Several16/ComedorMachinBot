@@ -220,18 +220,18 @@
 
                     <!-- Accounts Table -->
                     <div class="glass-card table-card">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding: 0 0.5rem;">
-                            <div style="display: flex; gap: 0.5rem; flex: 1; max-width: 450px;">
-                                <div class="form-group" style="margin-bottom: 0; flex: 1;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; padding: 1rem 1rem 0 1rem;">
+                            <div style="display: flex; gap: 0.5rem; flex: 1; min-width: 250px; flex-wrap: wrap;">
+                                <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 200px;">
                                     <input type="text" id="searchAccountInput" class="form-input" placeholder="🔍 Buscar por Nombre, DNI o Código..." autocomplete="off">
                                 </div>
-                                <div class="form-group" style="margin-bottom: 0; min-width: 120px;">
+                                <div class="form-group" style="margin-bottom: 0; min-width: 120px; flex: 1;">
                                     <select id="groupFilterSelect" class="form-input" style="appearance: auto;">
                                         <option value="">Todos los grupos</option>
                                     </select>
                                 </div>
                             </div>
-                            <span class="text-muted" id="accountsCount" style="font-size: 0.9rem; margin-left: 1rem;">Cargando...</span>
+                            <span class="text-muted" id="accountsCount" style="font-size: 0.9rem; white-space: nowrap;">Cargando...</span>
                         </div>
                         <div class="table-wrapper">
                             <table class="data-table" id="accountsTable">
@@ -251,12 +251,13 @@
                                         <td><div class="skeleton skeleton-text short"></div></td>
                                         <td><div class="skeleton skeleton-text"></div></td>
                                         <td><div class="skeleton skeleton-text short"></div></td>
+                                        <td><div class="skeleton skeleton-text short"></div></td>
                                         <td></td>
                                     </tr>
                                 </tbody>
                             </table>
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding: 0 0.5rem;" id="accountsPagination">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; padding: 0 1rem 1rem 1rem;" id="accountsPagination">
                             <button class="btn btn-ghost btn-sm" id="prevPageBtn" disabled>← Anterior</button>
                             <span class="text-muted" id="pageIndicator" style="font-size: 0.9rem;">Página 1 de 1</span>
                             <button class="btn btn-ghost btn-sm" id="nextPageBtn" disabled>Siguiente →</button>
@@ -304,7 +305,7 @@
                     <h2 class="section-title">📅 Horario Semanal</h2>
                     <span class="badge badge-info" id="scheduleTodayBadge">Hoy: —</span>
                 </div>
-                <div class="glass-card" style="overflow-x: auto;">
+                <div class="glass-card" style="padding: 1.25rem;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
                         <p class="text-muted" style="margin: 0;">Activa/desactiva los días para cada cuenta. Solo se reservan cupos para los días activados.</p>
                         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
@@ -312,24 +313,26 @@
                             <button class="btn btn-ghost btn-sm" id="scheduleRefresh" title="Refrescar">🔄 Refrescar</button>
                         </div>
                     </div>
-                    <table class="table" id="scheduleTable">
-                        <thead>
-                            <tr>
-                                <th>Nombre</th>
-                                <th>DNI</th>
-                                <th class="schedule-day-header">LUN</th>
-                                <th class="schedule-day-header">MAR</th>
-                                <th class="schedule-day-header">MIE</th>
-                                <th class="schedule-day-header">JUE</th>
-                                <th class="schedule-day-header">VIE</th>
-                                <th class="schedule-day-header">SAB</th>
-                                <th class="schedule-day-header">DOM</th>
-                            </tr>
-                        </thead>
-                        <tbody id="scheduleBody">
-                            <tr><td colspan="9"><div class="empty-state"><div class="empty-state-icon">📅</div><div class="empty-state-text">Cargando horario...</div></div></td></tr>
-                        </tbody>
-                    </table>
+                    <div class="table-wrapper">
+                        <table class="data-table" id="scheduleTable">
+                            <thead>
+                                <tr>
+                                    <th>Nombre</th>
+                                    <th>DNI</th>
+                                    <th class="schedule-day-header">LUN</th>
+                                    <th class="schedule-day-header">MAR</th>
+                                    <th class="schedule-day-header">MIE</th>
+                                    <th class="schedule-day-header">JUE</th>
+                                    <th class="schedule-day-header">VIE</th>
+                                    <th class="schedule-day-header">SAB</th>
+                                    <th class="schedule-day-header">DOM</th>
+                                </tr>
+                            </thead>
+                            <tbody id="scheduleBody">
+                                <tr><td colspan="9"><div class="empty-state"><div class="empty-state-icon">📅</div><div class="empty-state-text">Cargando horario...</div></div></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
                     <div style="margin-top: 1rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
                         <span class="badge badge-success" id="scheduleTodayCount">Hoy: 0 cuentas activas</span>
                         <span class="text-muted" style="font-size: 0.8rem;">Los cambios se guardan automáticamente al hacer click</span>
