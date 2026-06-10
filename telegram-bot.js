@@ -2474,16 +2474,29 @@ app.get("/api/dashboard/stats", panelAuth, (_req, res) => {
     cronExpression = `Activo (${activeCrons} usuarios) a las ${firstCronTime}`;
     // Subtract 3 mins for pre-start
     const [hhStr, mmStr] = firstCronTime.split(":");
-    let date = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
-    date.setHours(parseInt(hhStr, 10));
-    date.setMinutes(parseInt(mmStr, 10) - 3); // 3 mins pre-start
-    date.setSeconds(0);
+    let targetH = parseInt(hhStr, 10);
+    let targetM = parseInt(mmStr, 10) - 3;
+    if (targetM < 0) { targetM += 60; targetH -= 1; }
+    if (targetH < 0) { targetH += 24; }
     
-    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
-    if (date <= now) {
-      date.setDate(date.getDate() + 1);
+    const nowLimaStr = new Date().toLocaleString("en-US", { timeZone: "America/Lima" });
+    let limaDate = new Date(nowLimaStr);
+    
+    limaDate.setHours(targetH, targetM, 0, 0);
+    
+    const nowLima = new Date(nowLimaStr);
+    if (limaDate <= nowLima) {
+      limaDate.setDate(limaDate.getDate() + 1);
     }
-    nextExecution = date.toISOString();
+    
+    const pad = n => String(n).padStart(2, '0');
+    const yyyy = limaDate.getFullYear();
+    const m = pad(limaDate.getMonth() + 1);
+    const d = pad(limaDate.getDate());
+    const h = pad(limaDate.getHours());
+    const mins = pad(limaDate.getMinutes());
+    
+    nextExecution = `${yyyy}-${m}-${d}T${h}:${mins}:00-05:00`;
   }
   
   res.json({
