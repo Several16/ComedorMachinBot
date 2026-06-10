@@ -970,16 +970,29 @@ function setupUserCron(chatId) {
       if (accountsToRun.length === 0 && u.autoRun.dni && u.autoRun.codigo) {
         accountsToRun = [{ dni: u.autoRun.dni, codigo: u.autoRun.codigo }];
       }
+
+      // Filtrar por día de la semana (Lima timezone)
+      const dayNames = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'];
+      const limaDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+      const todayDay = dayNames[limaDate.getDay()];
+      const totalBefore = accountsToRun.length;
+      accountsToRun = accountsToRun.filter(acc => {
+        // Si no tiene campo 'dias', incluir siempre (backwards compatible)
+        if (!acc.dias || !Array.isArray(acc.dias)) return true;
+        return acc.dias.includes(todayDay);
+      });
+      const skipped = totalBefore - accountsToRun.length;
       
       const turboModeFlag = u.autoRun.turboMode !== false;
       
       const isHybrid = u.autoRun.execMode === 'raw_hybrid';
       
       if (telegramBotClient) {
+        const skipMsg = skipped > 0 ? ` (${skipped} omitidas por horario)` : '';
         telegramBotClient
           .sendMessage(
             id,
-            `⏰ Auto iniciado. Cuentas: ${accountsToRun.length}. Estrategia: ${isHybrid ? '🚀 Híbrido' : '🎭 Playwright'}. Hora: ${u.autoRun.time} | inicio real: ${startTime} (Lima).`
+            `⏰ Auto iniciado. Cuentas: ${accountsToRun.length}${skipMsg}. Día: ${todayDay.toUpperCase()}. Estrategia: ${isHybrid ? '🚀 Híbrido' : '🎭 Playwright'}. Hora: ${u.autoRun.time} | inicio real: ${startTime} (Lima).`
           )
           .catch(() => {});
       }
@@ -2340,6 +2353,7 @@ app.get("/api/dashboard/accounts", panelAuth, (_req, res) => {
         dni: acc.dni,
         codigo: acc.codigo,
         nombre: acc.nombre || '',
+        dias: acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'], // Default lun-vie
       });
     }
   }
@@ -2507,6 +2521,78 @@ app.get("/api/dashboard/users", panelAuth, (_req, res) => {
     });
   }
   res.json({ ok: true, users });
+});
+
+// PUT /api/dashboard/accounts/schedule - Update days for an account
+app.put("/api/dashboard/accounts/schedule", panelAuth, (req, res) => {
+  const { chatId, dni, dias } = req.body || {};
+  if (!chatId || !dni || !Array.isArray(dias)) {
+    return res.status(400).json({ ok: false, message: "chatId, dni, and dias[] are required" });
+  }
+  const validDays = ['lun', 'mar', 'mie', 'jue', 'vie', 'sab', 'dom'];
+  const filtered = dias.filter(d => validDays.includes(d));
+  
+  if (!settings[chatId]?.autoRun?.accounts) {
+    return res.status(404).json({ ok: false, message: "User not found" });
+  }
+  const account = settings[chatId].autoRun.accounts.find(a => a.dni === String(dni));
+  if (!account) {
+    return res.status(404).json({ ok: false, message: "Account not found" });
+  }
+  account.dias = filtered;
+  saveState();
+  res.json({ ok: true, message: `Schedule updated for DNI ${dni}`, dias: filtered });
+});
+
+// PUT /api/dashboard/accounts/schedule/bulk - Update days for ALL accounts of a user
+app.put("/api/dashboard/accounts/schedule/bulk", panelAuth, (req, res) => {
+  const { chatId, dias } = req.body || {};
+  if (!chatId || !Array.isArray(dias)) {
+    return res.status(400).json({ ok: false, message: "chatId and dias[] are required" });
+  }
+  const validDays = ['lun', 'mar', 'mie', 'jue', 'vie', 'sab', 'dom'];
+  const filtered = dias.filter(d => validDays.includes(d));
+  
+  if (!settings[chatId]?.autoRun?.accounts) {
+    return res.status(404).json({ ok: false, message: "User not found" });
+  }
+  for (const acc of settings[chatId].autoRun.accounts) {
+    acc.dias = [...filtered];
+  }
+  saveState();
+  res.json({ ok: true, message: `Schedule updated for all accounts`, dias: filtered, count: settings[chatId].autoRun.accounts.length });
+});
+
+// GET /api/dashboard/schedule - Get schedule overview (today's active accounts)
+app.get("/api/dashboard/schedule", panelAuth, (_req, res) => {
+  const dayNames = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'];
+  const limaDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+  const todayDay = dayNames[limaDate.getDay()];
+  
+  const schedule = {};
+  for (const day of dayNames) {
+    schedule[day] = [];
+  }
+  
+  for (const [chatId, userSettings] of Object.entries(settings)) {
+    if (chatId === 'adminChatId') continue;
+    const accounts = userSettings?.autoRun?.accounts || [];
+    for (const acc of accounts) {
+      const activeDays = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie']; // Default: lun-vie
+      for (const day of activeDays) {
+        if (schedule[day]) {
+          schedule[day].push({ chatId, dni: acc.dni, nombre: acc.nombre || '' });
+        }
+      }
+    }
+  }
+  
+  res.json({
+    ok: true,
+    today: todayDay,
+    todayCount: schedule[todayDay]?.length || 0,
+    schedule
+  });
 });
 
 function startPanelServer(port, retriesLeft = 8) {

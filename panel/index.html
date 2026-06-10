@@ -278,6 +278,44 @@
                     </div>
                 </section>
             </div>
+            <!-- Section: Weekly Schedule -->
+            <section class="section" id="scheduleSection">
+                <div class="section-header">
+                    <h2 class="section-title">📅 Horario Semanal</h2>
+                    <span class="badge badge-info" id="scheduleTodayBadge">Hoy: —</span>
+                </div>
+                <div class="glass-card" style="overflow-x: auto;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+                        <p class="text-muted" style="margin: 0;">Activa/desactiva los días para cada cuenta. Solo se reservan cupos para los días activados.</p>
+                        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                            <button class="btn btn-ghost btn-sm" id="scheduleAllDays" title="Activar lun-vie para todos">✅ Todos Lun-Vie</button>
+                            <button class="btn btn-ghost btn-sm" id="scheduleRefresh" title="Refrescar">🔄 Refrescar</button>
+                        </div>
+                    </div>
+                    <table class="table" id="scheduleTable">
+                        <thead>
+                            <tr>
+                                <th>Nombre</th>
+                                <th>DNI</th>
+                                <th class="schedule-day-header">LUN</th>
+                                <th class="schedule-day-header">MAR</th>
+                                <th class="schedule-day-header">MIE</th>
+                                <th class="schedule-day-header">JUE</th>
+                                <th class="schedule-day-header">VIE</th>
+                                <th class="schedule-day-header">SAB</th>
+                                <th class="schedule-day-header">DOM</th>
+                            </tr>
+                        </thead>
+                        <tbody id="scheduleBody">
+                            <tr><td colspan="9"><div class="empty-state"><div class="empty-state-icon">📅</div><div class="empty-state-text">Cargando horario...</div></div></td></tr>
+                        </tbody>
+                    </table>
+                    <div style="margin-top: 1rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                        <span class="badge badge-success" id="scheduleTodayCount">Hoy: 0 cuentas activas</span>
+                        <span class="text-muted" style="font-size: 0.8rem;">Los cambios se guardan automáticamente al hacer click</span>
+                    </div>
+                </div>
+            </section>
 
             <!-- Section: Control Panel -->
             <section class="section" id="controlSection">

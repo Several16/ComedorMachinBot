@@ -716,9 +716,165 @@
             fetchStats(),
             fetchAccounts(),
             fetchHistory(),
+            fetchSchedule(),
         ]);
 
         startTimers();
+    }
+
+    // ── Schedule Management ────────────────────────────────────
+    const ALL_DAYS = ['lun', 'mar', 'mie', 'jue', 'vie', 'sab', 'dom'];
+    const DAY_LABELS = { lun: 'LUN', mar: 'MAR', mie: 'MIE', jue: 'JUE', vie: 'VIE', sab: 'SAB', dom: 'DOM' };
+
+    async function fetchSchedule() {
+        const { ok, data } = await api('GET', '/api/dashboard/accounts');
+        if (ok && data.ok) {
+            renderSchedule(data.accounts || []);
+        }
+    }
+
+    function renderSchedule(accounts) {
+        const scheduleBody = document.getElementById('scheduleBody');
+        const todayBadge = document.getElementById('scheduleTodayBadge');
+        const todayCount = document.getElementById('scheduleTodayCount');
+
+        if (!scheduleBody) return;
+
+        // Get today's day name in Lima timezone
+        const limaDate = new Date(new Date().toLocaleString('en-US', { timeZone: CONFIG.TIMEZONE }));
+        const dayIdx = limaDate.getDay();
+        const dayNames = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'];
+        const todayDay = dayNames[dayIdx];
+
+        if (todayBadge) todayBadge.textContent = `Hoy: ${todayDay.toUpperCase()}`;
+
+        if (!accounts || accounts.length === 0) {
+            scheduleBody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-state-icon">📅</div><div class="empty-state-text">No hay cuentas registradas</div></div></td></tr>`;
+            if (todayCount) todayCount.textContent = 'Hoy: 0 cuentas activas';
+            return;
+        }
+
+        // Count today's active accounts
+        let activeToday = 0;
+
+        scheduleBody.innerHTML = accounts.map((acc, i) => {
+            const dias = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'];
+            const isActiveToday = dias.includes(todayDay);
+            if (isActiveToday) activeToday++;
+
+            const dayCells = ALL_DAYS.map(day => {
+                const isActive = dias.includes(day);
+                const isToday = day === todayDay;
+                const cls = `schedule-toggle ${isActive ? 'active' : ''} ${isToday ? 'today' : ''}`;
+                return `<td class="schedule-cell">
+                    <button class="${cls}" 
+                            data-chatid="${escapeHtml(acc.chatId)}" 
+                            data-dni="${escapeHtml(acc.dni)}" 
+                            data-day="${day}"
+                            title="${isActive ? 'Desactivar' : 'Activar'} ${day.toUpperCase()}">
+                        ${isActive ? '✅' : '❌'}
+                    </button>
+                </td>`;
+            }).join('');
+
+            const rowClass = isActiveToday ? '' : 'schedule-row-inactive';
+            return `<tr class="fade-in ${rowClass}" style="animation-delay: ${i * 0.02}s">
+                <td><strong>${escapeHtml(acc.nombre || '—')}</strong></td>
+                <td class="text-muted">${escapeHtml(acc.dni)}</td>
+                ${dayCells}
+            </tr>`;
+        }).join('');
+
+        if (todayCount) todayCount.textContent = `Hoy: ${activeToday} cuentas activas`;
+
+        // Highlight today's column header
+        const headers = document.querySelectorAll('.schedule-day-header');
+        headers.forEach(h => {
+            const dayText = h.textContent.toLowerCase();
+            if (dayText === todayDay) {
+                h.style.color = 'var(--color-primary)';
+                h.style.fontWeight = '700';
+            } else {
+                h.style.color = '';
+                h.style.fontWeight = '';
+            }
+        });
+
+        // Bind toggle click handlers
+        scheduleBody.querySelectorAll('.schedule-toggle').forEach(btn => {
+            btn.addEventListener('click', () => toggleDay(btn));
+        });
+    }
+
+    async function toggleDay(btn) {
+        const chatId = btn.dataset.chatid;
+        const dni = btn.dataset.dni;
+        const day = btn.dataset.day;
+        const isCurrentlyActive = btn.classList.contains('active');
+
+        // Find the account in state
+        const acc = state.accounts.find(a => a.chatId === chatId && a.dni === dni);
+        if (!acc) return;
+
+        let newDias = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'];
+        if (isCurrentlyActive) {
+            newDias = newDias.filter(d => d !== day);
+        } else {
+            newDias = [...newDias, day];
+        }
+
+        // Optimistic UI update
+        btn.classList.toggle('active');
+        btn.textContent = isCurrentlyActive ? '❌' : '✅';
+
+        const { ok, data } = await api('PUT', '/api/dashboard/accounts/schedule', { chatId, dni, dias: newDias });
+        if (ok && data.ok) {
+            acc.dias = data.dias;
+            // Update today count
+            updateTodayCount();
+        } else {
+            // Revert
+            btn.classList.toggle('active');
+            btn.textContent = isCurrentlyActive ? '✅' : '❌';
+            toast('error', 'Error', data?.message || 'No se pudo actualizar el horario');
+        }
+    }
+
+    function updateTodayCount() {
+        const todayCount = document.getElementById('scheduleTodayCount');
+        if (!todayCount) return;
+        const limaDate = new Date(new Date().toLocaleString('en-US', { timeZone: CONFIG.TIMEZONE }));
+        const dayNames = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'];
+        const todayDay = dayNames[limaDate.getDay()];
+        let count = 0;
+        for (const acc of state.accounts) {
+            const dias = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'];
+            if (dias.includes(todayDay)) count++;
+        }
+        todayCount.textContent = `Hoy: ${count} cuentas activas`;
+    }
+
+    async function scheduleAllWeekdays() {
+        const users = {};
+        for (const acc of state.accounts) {
+            if (!users[acc.chatId]) users[acc.chatId] = [];
+            users[acc.chatId].push(acc);
+        }
+
+        const dias = ['lun', 'mar', 'mie', 'jue', 'vie'];
+        let success = 0;
+        for (const chatId of Object.keys(users)) {
+            const { ok } = await api('PUT', '/api/dashboard/accounts/schedule/bulk', { chatId, dias });
+            if (ok) success++;
+        }
+
+        if (success > 0) {
+            toast('success', 'Horario actualizado', `Todas las cuentas activadas Lun-Vie`);
+            await fetchAccounts();
+            fetchSchedule();
+        } else {
+            toast('error', 'Error', 'No se pudo actualizar el horario');
+        }
     }
 
     // ── Event Listeners ────────────────────────────────────────
@@ -727,6 +883,15 @@
         DOM.bulkImportBtn.addEventListener('click', bulkImport);
         DOM.executeBtn.addEventListener('click', executeNow);
         DOM.healthCheckBtn.addEventListener('click', healthCheck);
+
+        // Schedule buttons
+        const scheduleAllBtn = document.getElementById('scheduleAllDays');
+        const scheduleRefreshBtn = document.getElementById('scheduleRefresh');
+        if (scheduleAllBtn) scheduleAllBtn.addEventListener('click', scheduleAllWeekdays);
+        if (scheduleRefreshBtn) scheduleRefreshBtn.addEventListener('click', () => {
+            fetchSchedule();
+            toast('info', 'Actualizado', 'Horario actualizado');
+        });
 
         DOM.refreshWorkersBtn.addEventListener('click', () => {
             state.timers.workers = CONFIG.WORKERS_REFRESH_INTERVAL;
@@ -769,6 +934,29 @@
     function boot() {
         bindEvents();
         initAuth();
+
+        // Inject schedule CSS
+        const style = document.createElement('style');
+        style.textContent = `
+            .schedule-cell { text-align: center; padding: 0.25rem !important; }
+            .schedule-toggle {
+                width: 36px; height: 36px; border-radius: 8px;
+                border: 2px solid var(--color-border);
+                background: rgba(255,255,255,0.03);
+                cursor: pointer; font-size: 0.85rem;
+                transition: all 0.2s ease;
+                display: inline-flex; align-items: center; justify-content: center;
+            }
+            .schedule-toggle:hover { transform: scale(1.15); border-color: var(--color-primary); }
+            .schedule-toggle.active { background: rgba(16, 185, 129, 0.15); border-color: var(--color-success); }
+            .schedule-toggle.today { box-shadow: 0 0 8px rgba(139, 92, 246, 0.5); }
+            .schedule-toggle.active.today { box-shadow: 0 0 8px rgba(16, 185, 129, 0.5); }
+            .schedule-row-inactive td { opacity: 0.5; }
+            .schedule-row-inactive:hover td { opacity: 1; }
+            .schedule-day-header { text-align: center !important; font-size: 0.75rem; letter-spacing: 0.05em; }
+            .btn-sm { font-size: 0.8rem; padding: 0.35rem 0.75rem; }
+        `;
+        document.head.appendChild(style);
     }
 
     // Run when DOM is ready
