@@ -29,6 +29,9 @@
         intervals: {},
         connected: false,
         startTime: Date.now(),
+        accountsPage: 1,
+        accountsPerPage: 10,
+        searchQuery: '',
     };
 
     // ── DOM References ─────────────────────────────────────────
@@ -65,6 +68,10 @@
         bulkImportText: $('#bulkImportText'),
         accountsBody: $('#accountsBody'),
         accountsCount: $('#accountsCount'),
+        searchAccountInput: $('#searchAccountInput'),
+        prevPageBtn: $('#prevPageBtn'),
+        nextPageBtn: $('#nextPageBtn'),
+        pageIndicator: $('#pageIndicator'),
         historyList: $('#historyList'),
         historyTimer: $('#historyTimer'),
         refreshHistoryBtn: $('#refreshHistoryBtn'),
@@ -368,23 +375,49 @@
     }
 
     function renderAccounts() {
-        const accounts = state.accounts;
+        let accounts = state.accounts || [];
 
-        if (!accounts || accounts.length === 0) {
+        // Apply search filter
+        if (state.searchQuery) {
+            const q = state.searchQuery.toLowerCase();
+            accounts = accounts.filter(a => 
+                (a.nombre && a.nombre.toLowerCase().includes(q)) || 
+                (a.dni && String(a.dni).includes(q)) || 
+                (a.codigo && String(a.codigo).includes(q))
+            );
+        }
+
+        const totalFiltered = accounts.length;
+        const totalPages = Math.ceil(totalFiltered / state.accountsPerPage) || 1;
+        
+        // Ensure page is within bounds
+        if (state.accountsPage > totalPages) state.accountsPage = totalPages;
+        if (state.accountsPage < 1) state.accountsPage = 1;
+
+        // Apply pagination
+        const startIndex = (state.accountsPage - 1) * state.accountsPerPage;
+        const paginatedAccounts = accounts.slice(startIndex, startIndex + state.accountsPerPage);
+
+        // Update UI counters and buttons
+        DOM.accountsCount.textContent = `${totalFiltered} cuenta${totalFiltered !== 1 ? 's' : ''}`;
+        DOM.pageIndicator.textContent = `Página ${state.accountsPage} de ${totalPages}`;
+        DOM.prevPageBtn.disabled = state.accountsPage <= 1;
+        DOM.nextPageBtn.disabled = state.accountsPage >= totalPages;
+
+        if (totalFiltered === 0) {
             DOM.accountsBody.innerHTML = `
                 <tr>
                     <td colspan="5">
                         <div class="empty-state">
                             <div class="empty-state-icon">📋</div>
-                            <div class="empty-state-text">No hay cuentas registradas</div>
+                            <div class="empty-state-text">${state.searchQuery ? 'No se encontraron resultados' : 'No hay cuentas registradas'}</div>
                         </div>
                     </td>
                 </tr>`;
-            DOM.accountsCount.textContent = '0 cuentas';
             return;
         }
 
-        DOM.accountsBody.innerHTML = accounts.map((a, i) => {
+        DOM.accountsBody.innerHTML = paginatedAccounts.map((a, i) => {
             const dni = a.dni || a.DNI || '—';
             const code = a.codigo || a.code || a.Code || '—';
             const name = a.nombre || a.name || a.Name || '—';
@@ -415,8 +448,6 @@
                     </td>
                 </tr>`;
         }).join('');
-
-        DOM.accountsCount.textContent = `${accounts.length} cuenta${accounts.length !== 1 ? 's' : ''}`;
 
         // Attach delete handlers
         DOM.accountsBody.querySelectorAll('.btn-delete-sm').forEach(btn => {
@@ -883,6 +914,25 @@
         DOM.bulkImportBtn.addEventListener('click', bulkImport);
         DOM.executeBtn.addEventListener('click', executeNow);
         DOM.healthCheckBtn.addEventListener('click', healthCheck);
+
+        // Search and Pagination
+        DOM.searchAccountInput.addEventListener('input', (e) => {
+            state.searchQuery = e.target.value.trim();
+            state.accountsPage = 1; // Reset to first page on search
+            renderAccounts();
+        });
+
+        DOM.prevPageBtn.addEventListener('click', () => {
+            if (state.accountsPage > 1) {
+                state.accountsPage--;
+                renderAccounts();
+            }
+        });
+
+        DOM.nextPageBtn.addEventListener('click', () => {
+            state.accountsPage++;
+            renderAccounts();
+        });
 
         // Schedule buttons
         const scheduleAllBtn = document.getElementById('scheduleAllDays');

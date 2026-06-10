@@ -2436,8 +2436,15 @@ app.get("/api/dashboard/history", panelAuth, (_req, res) => {
 // GET /api/dashboard/stats - Quick stats
 app.get("/api/dashboard/stats", panelAuth, (_req, res) => {
   let totalAccounts = 0;
+  let firstCronTime = null;
+  let activeCrons = 0;
+  
   for (const [chatId, user] of Object.entries(licenses.users)) {
     totalAccounts += (user?.autoRun?.accounts || []).length;
+    if (user?.autoRun?.enabled && user?.autoRun?.time) {
+      activeCrons++;
+      if (!firstCronTime) firstCronTime = user.autoRun.time;
+    }
   }
   
   // Get last run stats
@@ -2453,6 +2460,26 @@ app.get("/api/dashboard/stats", panelAuth, (_req, res) => {
   
   const successRate = lastTotal > 0 ? Math.round((lastSuccesses / lastTotal) * 100) : 0;
   
+  // Calculate cron info
+  let cronExpression = "Apagado";
+  let nextExecution = null;
+  
+  if (activeCrons > 0 && firstCronTime) {
+    cronExpression = `Activo (${activeCrons} usuarios) a las ${firstCronTime}`;
+    // Subtract 3 mins for pre-start
+    const [hhStr, mmStr] = firstCronTime.split(":");
+    let date = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+    date.setHours(parseInt(hhStr, 10));
+    date.setMinutes(parseInt(mmStr, 10) - 3); // 3 mins pre-start
+    date.setSeconds(0);
+    
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+    if (date <= now) {
+      date.setDate(date.getDate() + 1);
+    }
+    nextExecution = date.toISOString();
+  }
+  
   res.json({
     ok: true,
     totalAccounts,
@@ -2461,7 +2488,9 @@ app.get("/api/dashboard/stats", panelAuth, (_req, res) => {
     lastTotal,
     successRate,
     workersConfigured: getWorkerUrls().length,
-    distributedMode: process.env.DISTRIBUTED_MODE === 'true'
+    distributedMode: process.env.DISTRIBUTED_MODE === 'true',
+    cronExpression,
+    nextExecution
   });
 });
 

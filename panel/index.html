@@ -216,6 +216,12 @@
 
                     <!-- Accounts Table -->
                     <div class="glass-card table-card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding: 0 0.5rem;">
+                            <div class="form-group" style="margin-bottom: 0; flex: 1; max-width: 300px;">
+                                <input type="text" id="searchAccountInput" class="form-input" placeholder="🔍 Buscar por Nombre, DNI o Código..." autocomplete="off">
+                            </div>
+                            <span class="text-muted" id="accountsCount" style="font-size: 0.9rem; margin-left: 1rem;">Cargando...</span>
+                        </div>
                         <div class="table-wrapper">
                             <table class="data-table" id="accountsTable">
                                 <thead>
@@ -238,8 +244,10 @@
                                 </tbody>
                             </table>
                         </div>
-                        <div class="table-footer" id="accountsFooter">
-                            <span class="text-muted" id="accountsCount">Cargando...</span>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding: 0 0.5rem;" id="accountsPagination">
+                            <button class="btn btn-ghost btn-sm" id="prevPageBtn" disabled>← Anterior</button>
+                            <span class="text-muted" id="pageIndicator" style="font-size: 0.9rem;">Página 1 de 1</span>
+                            <button class="btn btn-ghost btn-sm" id="nextPageBtn" disabled>Siguiente →</button>
                         </div>
                     </div>
                 </section>
