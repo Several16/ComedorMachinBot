@@ -2312,6 +2312,203 @@ app.get("/api/admin/log-tail", panelAuth, (_req, res) => {
   });
 });
 
+// ══════════════════════════════════════════
+// Dashboard API endpoints
+// ══════════════════════════════════════════
+
+// GET /api/dashboard/workers - Worker health status
+app.get("/api/dashboard/workers", panelAuth, async (_req, res) => {
+  try {
+    const health = await healthCheckAll();
+    const workerUrls = getWorkerUrls();
+    res.json({ ok: true, workers: health, totalConfigured: workerUrls.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/dashboard/accounts - All accounts from all users
+app.get("/api/dashboard/accounts", panelAuth, (_req, res) => {
+  const allAccounts = [];
+  for (const [chatId, userSettings] of Object.entries(settings)) {
+    if (chatId === 'adminChatId') continue;
+    const autoRun = userSettings?.autoRun;
+    if (!autoRun || !Array.isArray(autoRun.accounts)) continue;
+    for (const acc of autoRun.accounts) {
+      allAccounts.push({
+        chatId,
+        dni: acc.dni,
+        codigo: acc.codigo,
+        nombre: acc.nombre || '',
+      });
+    }
+  }
+  res.json({ ok: true, accounts: allAccounts, total: allAccounts.length });
+});
+
+// POST /api/dashboard/accounts/add - Add account to a user
+app.post("/api/dashboard/accounts/add", panelAuth, (req, res) => {
+  const { chatId, dni, codigo, nombre } = req.body || {};
+  if (!chatId || !dni || !codigo) {
+    return res.status(400).json({ ok: false, message: "chatId, dni, and codigo are required" });
+  }
+  const user = ensureUserAutoRun(chatId);
+  if (!Array.isArray(user.autoRun.accounts)) user.autoRun.accounts = [];
+  // Check duplicate
+  if (user.autoRun.accounts.some(a => a.dni === String(dni))) {
+    return res.status(409).json({ ok: false, message: `DNI ${dni} already exists for this user` });
+  }
+  user.autoRun.accounts.push({ dni: String(dni), codigo: String(codigo), nombre: String(nombre || '') });
+  saveState();
+  res.json({ ok: true, message: "Account added", total: user.autoRun.accounts.length });
+});
+
+// DELETE /api/dashboard/accounts/:chatId/:dni - Remove account
+app.delete("/api/dashboard/accounts/:chatId/:dni", panelAuth, (req, res) => {
+  const { chatId, dni } = req.params;
+  if (!settings[chatId]?.autoRun?.accounts) {
+    return res.status(404).json({ ok: false, message: "User not found" });
+  }
+  const before = settings[chatId].autoRun.accounts.length;
+  settings[chatId].autoRun.accounts = settings[chatId].autoRun.accounts.filter(a => a.dni !== dni);
+  const after = settings[chatId].autoRun.accounts.length;
+  if (before === after) {
+    return res.status(404).json({ ok: false, message: "Account not found" });
+  }
+  saveState();
+  res.json({ ok: true, message: `Account ${dni} removed`, remaining: after });
+});
+
+// GET /api/dashboard/history - Recent execution history
+app.get("/api/dashboard/history", panelAuth, (_req, res) => {
+  // Read recent log files to extract execution summaries
+  const history = [];
+  try {
+    const logFiles = fs.readdirSync(LOGS_DIR)
+      .filter(f => f.startsWith('tg-') && f.endsWith('.log'))
+      .sort().reverse().slice(0, 20);
+    
+    for (const file of logFiles) {
+      const fullPath = path.join(LOGS_DIR, file);
+      try {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const summaryMatch = content.match(/Ejecución (?:RAW|VISUAL) finalizada\. Éxitos: (\d+)\/(\d+)/);
+        const distributedMatch = content.match(/DISTRIBUIDO/);
+        const startMatch = content.match(/\[([^\]]+)\] Job iniciado/);
+        const endMatch = content.match(/\[([^\]]+)\] Bot finalizado con código (\d+)/);
+        
+        const entry = {
+          file,
+          startedAt: startMatch ? startMatch[1] : null,
+          finishedAt: endMatch ? endMatch[1] : null,
+          exitCode: endMatch ? parseInt(endMatch[2]) : null,
+          mode: distributedMatch ? 'distributed' : 'local',
+          successes: summaryMatch ? parseInt(summaryMatch[1]) : null,
+          total: summaryMatch ? parseInt(summaryMatch[2]) : null,
+        };
+
+        // Extract per-account details
+        const resumenLines = content.match(/\[RAW_RESUMEN\]\s+[✅❌]\s+.+/g);
+        if (resumenLines) {
+          entry.details = resumenLines.map(l => l.replace(/\[RAW_RESUMEN\]\s+/, ''));
+        }
+
+        history.push(entry);
+      } catch {}
+    }
+  } catch {}
+  res.json({ ok: true, history });
+});
+
+// GET /api/dashboard/stats - Quick stats
+app.get("/api/dashboard/stats", panelAuth, (_req, res) => {
+  let totalAccounts = 0;
+  for (const [chatId, userSettings] of Object.entries(settings)) {
+    if (chatId === 'adminChatId') continue;
+    totalAccounts += (userSettings?.autoRun?.accounts || []).length;
+  }
+  
+  // Get last run stats
+  let lastSuccesses = 0, lastTotal = 0;
+  const lastExit = recentExits[0];
+  if (lastExit && lastExit.logPath && fs.existsSync(lastExit.logPath)) {
+    try {
+      const content = fs.readFileSync(lastExit.logPath, 'utf8');
+      const m = content.match(/Ejecución (?:RAW|VISUAL) finalizada\. Éxitos: (\d+)\/(\d+)/);
+      if (m) { lastSuccesses = parseInt(m[1]); lastTotal = parseInt(m[2]); }
+    } catch {}
+  }
+  
+  const successRate = lastTotal > 0 ? Math.round((lastSuccesses / lastTotal) * 100) : 0;
+  
+  res.json({
+    ok: true,
+    totalAccounts,
+    activeJobs: runningJobs.size,
+    lastSuccesses,
+    lastTotal,
+    successRate,
+    workersConfigured: getWorkerUrls().length,
+    distributedMode: process.env.DISTRIBUTED_MODE === 'true'
+  });
+});
+
+// POST /api/dashboard/execute - Trigger distributed execution
+app.post("/api/dashboard/execute", panelAuth, async (req, res) => {
+  const { chatId } = req.body || {};
+  if (!chatId) {
+    return res.status(400).json({ ok: false, message: "chatId required" });
+  }
+  const user = ensureUserAutoRun(chatId);
+  const accounts = user.autoRun?.accounts || [];
+  if (accounts.length === 0) {
+    return res.status(400).json({ ok: false, message: "No accounts configured for this user" });
+  }
+  
+  try {
+    const result = await startDistributedBot(chatId, {
+      accounts,
+      turboMode: true,
+      waveSize: 4,
+      waveDelayMs: 500,
+      maxPostAttempts: 150,
+      retryDelayMs: 250,
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/dashboard/health-check - Force health check
+app.get("/api/dashboard/health-check", panelAuth, async (_req, res) => {
+  try {
+    const health = await healthCheckAll();
+    res.json({ ok: true, workers: health });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/dashboard/users - List all users with their account counts  
+app.get("/api/dashboard/users", panelAuth, (_req, res) => {
+  const users = [];
+  for (const [chatId, userSettings] of Object.entries(settings)) {
+    if (chatId === 'adminChatId') continue;
+    const autoRun = userSettings?.autoRun;
+    if (!autoRun) continue;
+    users.push({
+      chatId,
+      enabled: autoRun.enabled || false,
+      time: autoRun.time || '07:00',
+      execMode: autoRun.execMode || 'raw_hybrid',
+      accountCount: (autoRun.accounts || []).length,
+      turboMode: autoRun.turboMode !== false
+    });
+  }
+  res.json({ ok: true, users });
+});
+
 function startPanelServer(port, retriesLeft = 8) {
   const server = app.listen(port);
   server.once("listening", () => {

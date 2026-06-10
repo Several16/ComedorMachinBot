@@ -1,72 +1,339 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="es">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Panel Licencias - Charola Telegram</title>
-    <link rel="stylesheet" href="./styles.css" />
-  </head>
-  <body>
-    <main class="wrap">
-      <header>
-        <h1>Panel de Licencias</h1>
-        <p>Administra usuarios, códigos y estado del bot de Telegram.</p>
-      </header>
-
-      <section class="card">
-        <h2>Acceso</h2>
-        <div class="row">
-          <input id="panelKey" placeholder="ADMIN_PANEL_KEY" />
-          <button id="saveKey">Guardar clave</button>
-          <button id="refresh">Actualizar</button>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ComedorMachinBot — Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽️</text></svg>">
+</head>
+<body>
+    <!-- Auth Modal (shown on first visit) -->
+    <div id="authOverlay" class="auth-overlay hidden">
+        <div class="auth-card glass-card">
+            <div class="auth-icon">🔐</div>
+            <h2>Panel de Administración</h2>
+            <p class="text-muted">Ingresa la clave de acceso para continuar</p>
+            <form id="authForm">
+                <div class="form-group">
+                    <input type="password" id="authKeyInput" class="form-input" placeholder="PANEL_KEY" autocomplete="off" required>
+                </div>
+                <button type="submit" class="btn btn-primary btn-full">
+                    <span>Acceder</span>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                </button>
+            </form>
         </div>
-        <small id="status">Sin conectar.</small>
-      </section>
+    </div>
 
-      <section class="grid">
-        <article class="card">
-          <h2>Resumen</h2>
-          <div id="summary" class="kv"></div>
-        </article>
+    <!-- Confirmation Modal -->
+    <div id="confirmModal" class="modal-overlay hidden">
+        <div class="modal-card glass-card">
+            <div class="modal-icon" id="modalIcon">⚠️</div>
+            <h3 id="modalTitle">Confirmar acción</h3>
+            <p id="modalMessage" class="text-muted">¿Estás seguro?</p>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="modalCancel">Cancelar</button>
+                <button class="btn btn-danger" id="modalConfirm">Confirmar</button>
+            </div>
+        </div>
+    </div>
 
-        <article class="card">
-          <h2>Crear códigos</h2>
-          <div class="row">
-            <input id="codeDays" type="number" value="30" min="1" />
-            <input id="codeQty" type="number" value="1" min="1" max="100" />
-            <button id="createCodes">Crear</button>
-          </div>
-          <pre id="createdCodes"></pre>
-        </article>
+    <!-- Toast Container -->
+    <div id="toastContainer" class="toast-container"></div>
 
-        <article class="card">
-          <h2>Licencia directa a chat_id</h2>
-          <div class="row">
-            <input id="grantChatId" placeholder="chat_id" />
-            <input id="grantDays" type="number" value="30" min="1" />
-            <button id="grantBtn">Otorgar</button>
-            <button id="revokeBtn">Revocar</button>
-          </div>
-        </article>
+    <!-- Main App -->
+    <div id="app" class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-inner">
+                <div class="header-left">
+                    <div class="logo">
+                        <div class="logo-icon">🍽️</div>
+                        <div class="logo-text">
+                            <h1>ComedorMachinBot</h1>
+                            <span class="logo-subtitle">Sistema Distribuido de Reservas</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="header-right">
+                    <div class="header-time">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                        <span id="currentTime">--:--:--</span>
+                    </div>
+                    <div class="connection-status" id="connectionStatus">
+                        <span class="status-dot pulse-dot"></span>
+                        <span class="status-text">Conectado</span>
+                    </div>
+                    <button class="btn btn-ghost btn-sm" id="logoutBtn" title="Cerrar sesión">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    </button>
+                </div>
+            </div>
+        </header>
 
-        <article class="card">
-          <h2>Mantenimiento</h2>
-          <div class="row">
-            <button id="clearCapturesBtn">Borrar todas las capturas</button>
-          </div>
-        </article>
-      </section>
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Section: Workers -->
+            <section class="section" id="workersSection">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                        Workers Status
+                    </h2>
+                    <div class="section-actions">
+                        <span class="refresh-timer" id="workersTimer">Actualización en 30s</span>
+                        <button class="btn btn-ghost btn-sm" id="refreshWorkersBtn" title="Actualizar ahora">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="workers-grid" id="workersGrid">
+                    <!-- Worker cards injected by JS -->
+                    <div class="worker-card glass-card skeleton-card">
+                        <div class="skeleton skeleton-title"></div>
+                        <div class="skeleton skeleton-text"></div>
+                        <div class="skeleton skeleton-text short"></div>
+                    </div>
+                    <div class="worker-card glass-card skeleton-card">
+                        <div class="skeleton skeleton-title"></div>
+                        <div class="skeleton skeleton-text"></div>
+                        <div class="skeleton skeleton-text short"></div>
+                    </div>
+                    <div class="worker-card glass-card skeleton-card">
+                        <div class="skeleton skeleton-title"></div>
+                        <div class="skeleton skeleton-text"></div>
+                        <div class="skeleton skeleton-text short"></div>
+                    </div>
+                    <div class="worker-card glass-card skeleton-card">
+                        <div class="skeleton skeleton-title"></div>
+                        <div class="skeleton skeleton-text"></div>
+                        <div class="skeleton skeleton-text short"></div>
+                    </div>
+                </div>
+            </section>
 
-      <section class="card">
-        <h2>Usuarios</h2>
-        <div id="users"></div>
-      </section>
+            <!-- Section: Quick Stats -->
+            <section class="section" id="statsSection">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+                        Estadísticas Rápidas
+                    </h2>
+                </div>
+                <div class="stats-grid" id="statsGrid">
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon purple">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                        </div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="statAccounts" data-target="0">--</span>
+                            <span class="stat-label">Cuentas Registradas</span>
+                        </div>
+                    </div>
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon emerald">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        </div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="statSuccessRate" data-target="0">--%</span>
+                            <span class="stat-label">Tasa de Éxito</span>
+                        </div>
+                    </div>
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon cyan">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                        </div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="statCupos" data-target="0">--</span>
+                            <span class="stat-label">Cupos Hoy</span>
+                        </div>
+                    </div>
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon amber">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        </div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="statJobs" data-target="0">--</span>
+                            <span class="stat-label">Jobs Activos</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
-      <section class="card">
-        <h2>Códigos</h2>
-        <div id="codes"></div>
-      </section>
-    </main>
-    <script src="./app.js"></script>
-  </body>
-  </html>
+            <!-- Two Column Layout -->
+            <div class="two-columns">
+                <!-- Section: Accounts Management -->
+                <section class="section column-left" id="accountsSection">
+                    <div class="section-header">
+                        <h2 class="section-title">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+                            Gestión de Cuentas
+                        </h2>
+                    </div>
+
+                    <!-- Add Account Form -->
+                    <div class="glass-card form-card">
+                        <h3 class="form-title">Agregar Cuenta</h3>
+                        <form id="addAccountForm" class="add-form">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label class="form-label">DNI</label>
+                                    <input type="text" id="inputDni" class="form-input" placeholder="12345678" maxlength="8" required>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Código</label>
+                                    <input type="text" id="inputCode" class="form-input" placeholder="20210001" required>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Nombre</label>
+                                    <input type="text" id="inputName" class="form-input" placeholder="Juan Pérez" required>
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-primary">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                Agregar
+                            </button>
+                        </form>
+                    </div>
+
+                    <!-- Bulk Import -->
+                    <div class="glass-card form-card">
+                        <details class="bulk-import-details">
+                            <summary class="form-title clickable">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                Importación Masiva (JSON)
+                            </summary>
+                            <div class="bulk-import-body">
+                                <textarea id="bulkImportText" class="form-textarea" rows="4" placeholder='[{"dni":"12345678","codigo":"20210001","nombre":"Juan"}]'></textarea>
+                                <button type="button" class="btn btn-primary btn-sm" id="bulkImportBtn">Importar</button>
+                            </div>
+                        </details>
+                    </div>
+
+                    <!-- Accounts Table -->
+                    <div class="glass-card table-card">
+                        <div class="table-wrapper">
+                            <table class="data-table" id="accountsTable">
+                                <thead>
+                                    <tr>
+                                        <th>DNI</th>
+                                        <th>Código</th>
+                                        <th>Nombre</th>
+                                        <th>Estado</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="accountsBody">
+                                    <tr class="skeleton-row">
+                                        <td><div class="skeleton skeleton-text short"></div></td>
+                                        <td><div class="skeleton skeleton-text short"></div></td>
+                                        <td><div class="skeleton skeleton-text"></div></td>
+                                        <td><div class="skeleton skeleton-text short"></div></td>
+                                        <td></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="table-footer" id="accountsFooter">
+                            <span class="text-muted" id="accountsCount">Cargando...</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Section: Execution History -->
+                <section class="section column-right" id="historySection">
+                    <div class="section-header">
+                        <h2 class="section-title">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            Historial de Ejecuciones
+                        </h2>
+                        <div class="section-actions">
+                            <span class="refresh-timer" id="historyTimer">Actualización en 60s</span>
+                            <button class="btn btn-ghost btn-sm" id="refreshHistoryBtn" title="Actualizar ahora">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="history-list" id="historyList">
+                        <!-- History entries injected by JS -->
+                        <div class="glass-card skeleton-card">
+                            <div class="skeleton skeleton-title"></div>
+                            <div class="skeleton skeleton-text"></div>
+                            <div class="skeleton skeleton-text short"></div>
+                        </div>
+                        <div class="glass-card skeleton-card">
+                            <div class="skeleton skeleton-title"></div>
+                            <div class="skeleton skeleton-text"></div>
+                            <div class="skeleton skeleton-text short"></div>
+                        </div>
+                        <div class="glass-card skeleton-card">
+                            <div class="skeleton skeleton-title"></div>
+                            <div class="skeleton skeleton-text"></div>
+                            <div class="skeleton skeleton-text short"></div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Section: Control Panel -->
+            <section class="section" id="controlSection">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                        Panel de Control
+                    </h2>
+                </div>
+                <div class="controls-grid">
+                    <div class="glass-card control-card execute-card">
+                        <div class="control-icon">🚀</div>
+                        <h3>Ejecución Distribuida</h3>
+                        <p class="text-muted">Ejecutar reservas en todos los workers ahora</p>
+                        <button class="btn btn-execute" id="executeBtn">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            Ejecutar Ahora
+                        </button>
+                    </div>
+                    <div class="glass-card control-card">
+                        <div class="control-icon">⏰</div>
+                        <h3>Programación Cron</h3>
+                        <p class="text-muted">Próxima ejecución programada</p>
+                        <div class="cron-info">
+                            <span class="cron-badge" id="cronExpression">Cargando...</span>
+                            <span class="text-muted" id="nextExecution">--</span>
+                        </div>
+                    </div>
+                    <div class="glass-card control-card">
+                        <div class="control-icon">🏥</div>
+                        <h3>Health Check</h3>
+                        <p class="text-muted">Verificar estado de todos los workers</p>
+                        <button class="btn btn-success" id="healthCheckBtn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                            Verificar Workers
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="footer-inner">
+                <div class="footer-left">
+                    <span>ComedorMachinBot v2.0</span>
+                    <span class="footer-sep">•</span>
+                    <span class="text-muted">Sistema Distribuido de Reservas Universitarias</span>
+                </div>
+                <div class="footer-right">
+                    <span class="text-muted">Uptime: <span id="systemUptime">--</span></span>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
