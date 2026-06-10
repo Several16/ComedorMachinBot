@@ -155,7 +155,7 @@ async function executeDistributed(accounts, config = {}, onProgress = null) {
             rescueDelayMs: config.rescueDelayMs || 1000
           }
         }),
-        signal: AbortSignal.timeout(180000) // 3 minutos timeout
+        signal: AbortSignal.timeout(900000) // 15 minutos timeout (warmup puede tardar hasta 10min)
       });
 
       const data = await res.json();

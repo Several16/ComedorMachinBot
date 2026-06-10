@@ -956,7 +956,7 @@ function setupUserCron(chatId) {
       return;
     }
 
-    const launch = () => {
+    const launch = async () => {
       let accountsToRun = Array.isArray(u.autoRun.accounts) ? u.autoRun.accounts : [];
       if (accountsToRun.length === 0 && u.autoRun.dni && u.autoRun.codigo) {
         accountsToRun = [{ dni: u.autoRun.dni, codigo: u.autoRun.codigo }];
@@ -981,7 +981,7 @@ function setupUserCron(chatId) {
         
         let resultRaw;
         if (useDistributed) {
-          resultRaw = startDistributedBot(id, {
+          resultRaw = await startDistributedBot(id, {
             accounts: accountsToRun,
             turboMode: turboModeFlag,
             waveSize: 4,
@@ -2109,18 +2109,33 @@ bot.on("callback_query", async (query) => {
       );
 
       if (isHybrid) {
-        const resultRaw = startBot(chatId, {
-          accounts: accountsToRun,
-          turboMode: turboModeFlag,
-          execMode: 'raw',
-          maxAttempts: DEFAULTS.maxAttempts,
-          retryDelayMs: DEFAULTS.retryDelayMs,
-        });
+        const useDistributed = DISTRIBUTED_MODE && getWorkerUrls().length > 0;
+        
+        let resultRaw;
+        if (useDistributed) {
+          resultRaw = await startDistributedBot(chatId, {
+            accounts: accountsToRun,
+            turboMode: turboModeFlag,
+            waveSize: 4,
+            waveDelayMs: 500,
+            maxPostAttempts: 150,
+            retryDelayMs: 250,
+          });
+        } else {
+          resultRaw = startBot(chatId, {
+            accounts: accountsToRun,
+            turboMode: turboModeFlag,
+            execMode: 'raw',
+            maxAttempts: DEFAULTS.maxAttempts,
+            retryDelayMs: DEFAULTS.retryDelayMs,
+          });
+        }
 
         if (!resultRaw.started) {
           bot.sendMessage(chatId, `❌ Falló fase cruda: ${resultRaw.reason}`).catch(() => {});
         } else {
-          bot.sendMessage(chatId, "⏳ Fase 1 (RAW) iniciada. Sondeando API... Fase 2 visual en 1 min (modo prueba).").catch(() => {});
+          const modeLabel = useDistributed ? '(DISTRIBUIDO)' : '(LOCAL)';
+          bot.sendMessage(chatId, `⏳ Fase 1 (RAW) ${modeLabel} iniciada. Sondeando API... Fase 2 visual en 1 min (modo prueba).`).catch(() => {});
         }
         
         // En modo prueba, reducimos la espera a 1 minuto en lugar de 20 minutos
