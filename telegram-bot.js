@@ -6,6 +6,7 @@ const { spawn } = require("child_process");
 const express = require("express");
 const TelegramBot = require("node-telegram-bot-api");
 const cron = require("node-cron");
+const { executeDistributed, healthCheckAll, getWorkerUrls } = require("./coordinator");
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_ALLOWED_CHAT_ID = process.env.TELEGRAM_ALLOWED_CHAT_ID || "";
@@ -39,6 +40,7 @@ const MAX_PARALLEL_JOBS = Math.max(1, safeNumber(process.env.CHAROLA_MAX_PARALLE
 const MAX_PARALLEL_JOBS_PER_CHAT = Math.max(1, safeNumber(process.env.CHAROLA_MAX_PARALLEL_JOBS_PER_CHAT, 30));
 const LOADING_ACTION_INTERVAL_MS = Math.max(2000, safeNumber(process.env.CHAROLA_LOADING_ACTION_INTERVAL_MS, 4000));
 const NOTIFY_JOB_FINISH = process.env.CHAROLA_NOTIFY_ON_FINISH !== "false";
+const DISTRIBUTED_MODE = process.env.DISTRIBUTED_MODE === "true";
 const AUTO_PRESTART_MINUTES = Math.max(0, Math.min(59, safeNumber(process.env.CHAROLA_AUTO_PRESTART_MINUTES, 3)));
 const AUTO_START_JITTER_MAX_MS = Math.max(0, safeNumber(process.env.CHAROLA_AUTO_JITTER_MAX_MS, 15000));
 const LICENSE_EXPIRY_REMINDER_DAYS = Math.max(1, Math.min(30, safeNumber(process.env.LICENSE_EXPIRY_REMINDER_DAYS, 3)));
@@ -566,6 +568,140 @@ async function notifyJobFinished(exitInfo) {
   }
 }
 
+// ── Modo Distribuido: usar coordinador para ejecutar en workers ──
+async function startDistributedBot(chatId, config) {
+  const ownerChatId = String(chatId);
+  const jobId = generateJobId(ownerChatId);
+  const logPath = path.join(LOGS_DIR, `tg-${ownerChatId}-${stamp()}-${jobId}.log`);
+  const startedAt = nowIso();
+  const stream = fs.createWriteStream(logPath, { flags: "a" });
+
+  stream.write(`[${nowIso()}] Job iniciado desde Telegram (DISTRIBUIDO) | jobId=${jobId} | chatId=${ownerChatId}\n`);
+
+  const accounts = config.accounts || [];
+  if (accounts.length === 0) {
+    stream.write(`[${nowIso()}] Error: No hay cuentas para ejecutar\n`);
+    stream.end();
+    return { started: false, reason: "No hay cuentas configuradas" };
+  }
+
+  // Registrar como job activo
+  const fakeJob = {
+    jobId,
+    chatId: ownerChatId,
+    pid: process.pid,
+    startedAt,
+    logPath,
+    turboMode: true,
+    dni: "",
+    codigo: "",
+    process: null,
+    distributed: true
+  };
+  runningJobs.set(jobId, fakeJob);
+  startLoadingIndicator(ownerChatId);
+
+  // Ejecutar en background
+  (async () => {
+    try {
+      // Redirigir console.log del coordinador al log file
+      const origLog = console.log;
+      const origError = console.error;
+      const logToFile = (...args) => {
+        const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+        stream.write(msg + '\n');
+        origLog.apply(console, args);
+
+        // Emitir notificaciones de Telegram en tiempo real
+        if (telegramBotClient) {
+          if (msg.includes('[RAW_SUCCESS] DNI:')) {
+            const m = msg.match(/\[RAW_SUCCESS\] DNI: (\d+)/);
+            if (m) telegramBotClient.sendMessage(ownerChatId, `⚡ ¡Cupo asegurado (Modo Crudo)!\nDNI: ${m[1]}`).catch(()=>{});
+          }
+          if (msg.includes('[RAW_FAIL] DNI:')) {
+            const m = msg.match(/\[RAW_FAIL\] DNI: (\d+) \| ERROR: (.+)/);
+            if (m) telegramBotClient.sendMessage(ownerChatId, `❌ Sin cupo (RAW)\nDNI: ${m[1]}\nRazón: ${m[2]}`).catch(()=>{});
+          }
+          if (msg.includes('API ABIERTA')) {
+            telegramBotClient.sendMessage(ownerChatId, `🟢 API detectada ABIERTA. Lanzando ataque distribuido...`).catch(()=>{});
+          }
+        }
+      };
+      console.log = logToFile;
+      console.error = (...args) => {
+        const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+        stream.write(`[ERROR] ${msg}\n`);
+        origError.apply(console, args);
+      };
+
+      const result = await executeDistributed(accounts, config);
+
+      // Escribir resumen en formato compatible con notifyJobFinished
+      const successes = result.successes;
+      const total = result.total;
+      stream.write(`\n[RAW_RESUMEN] ═══════════════════════════════\n`);
+      stream.write(`[RAW_RESUMEN] Total: ${total} | Éxitos: ${successes} | Fallos: ${result.failures}\n`);
+      for (const r of result.results) {
+        const label = r.nombre ? `${r.nombre} (${r.dni})` : `DNI: ${r.dni}`;
+        if (r.success) {
+          stream.write(`[RAW_RESUMEN]   ✅ ${label}\n`);
+        } else {
+          stream.write(`[RAW_RESUMEN]   ❌ ${label} → ${r.reason || 'desconocido'}\n`);
+        }
+      }
+      stream.write(`[RAW_RESUMEN] ═══════════════════════════════\n\n`);
+      stream.write(`[${new Date().toLocaleString()}] Ejecución RAW finalizada. Éxitos: ${successes}/${total}\n`);
+
+      // Enviar resumen de Fase 1 por Telegram
+      if (telegramBotClient) {
+        let msg;
+        if (successes > 0 && successes === total) {
+          msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n✅ ¡PERFECTO! Se aseguraron *todos* los cupos: *${successes}/${total}*\n🌐 Workers usados: ${result.totalWorkers}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
+        } else if (successes > 0) {
+          msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n⚠️ Se aseguraron *${successes}/${total}* cupos.\n🌐 Workers usados: ${result.totalWorkers}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
+        } else {
+          msg = `⚠️ *FASE 1 FINALIZADA (DISTRIBUIDO)*\n❌ *0/${total}* cupos asegurados.\n🌐 Workers: ${result.totalWorkers}`;
+        }
+        telegramBotClient.sendMessage(ownerChatId, msg, {parse_mode: "Markdown"}).catch(()=>{});
+      }
+
+      // Restaurar console
+      console.log = origLog;
+      console.error = origError;
+
+      // Finalizar job
+      const exitCode = successes > 0 ? 0 : 1;
+      stream.write(`\n[${nowIso()}] Bot finalizado con código ${exitCode}\n`);
+      stream.end();
+      runningJobs.delete(jobId);
+      if (!listRunningJobs(ownerChatId).length) {
+        stopLoadingIndicator(ownerChatId);
+      }
+      const exitInfo = { jobId, chatId: ownerChatId, pid: process.pid, code: exitCode, at: nowIso(), logPath, dni: "" };
+      pushRecentExit(exitInfo);
+      await notifyJobFinished(exitInfo);
+
+    } catch (error) {
+      console.error(`[DISTRIBUTED] Error fatal:`, error.message);
+      stream.write(`\n[ERROR] ${error.message}\n`);
+      stream.write(`\n[${nowIso()}] Bot finalizado con código 1\n`);
+      stream.end();
+      runningJobs.delete(jobId);
+      stopLoadingIndicator(ownerChatId);
+    }
+  })();
+
+  return {
+    started: true,
+    jobId,
+    pid: process.pid,
+    logPath,
+    runningGlobal: runningJobs.size,
+    runningUser: listRunningJobs(ownerChatId).length,
+    distributed: true
+  };
+}
+
 function startBot(chatId, config) {
   const ownerChatId = String(chatId);
   const ownRunningJobs = listRunningJobs(ownerChatId);
@@ -840,18 +976,34 @@ function setupUserCron(chatId) {
       }
 
       if (isHybrid) {
-        const resultRaw = startBot(id, {
-          accounts: accountsToRun,
-          turboMode: turboModeFlag,
-          execMode: 'raw',
-          maxAttempts: DEFAULTS.maxAttempts,
-          retryDelayMs: DEFAULTS.retryDelayMs,
-        });
+        // Decidir si usar modo distribuido o local
+        const useDistributed = DISTRIBUTED_MODE && getWorkerUrls().length > 0;
+        
+        let resultRaw;
+        if (useDistributed) {
+          resultRaw = startDistributedBot(id, {
+            accounts: accountsToRun,
+            turboMode: turboModeFlag,
+            waveSize: 4,
+            waveDelayMs: 500,
+            maxPostAttempts: 150,
+            retryDelayMs: 250,
+          });
+        } else {
+          resultRaw = startBot(id, {
+            accounts: accountsToRun,
+            turboMode: turboModeFlag,
+            execMode: 'raw',
+            maxAttempts: DEFAULTS.maxAttempts,
+            retryDelayMs: DEFAULTS.retryDelayMs,
+          });
+        }
 
         if (!resultRaw.started && telegramBotClient) {
           telegramBotClient.sendMessage(id, `❌ Falló fase cruda: ${resultRaw.reason}`).catch(() => {});
         } else if (telegramBotClient) {
-          telegramBotClient.sendMessage(id, "⏳ Fase 1 (RAW) iniciada. Sondeando API hasta que abra... El resultado se notificará al terminar.").catch(() => {});
+          const modeLabel = useDistributed ? '(DISTRIBUIDO)' : '(LOCAL)';
+          telegramBotClient.sendMessage(id, `⏳ Fase 1 (RAW) ${modeLabel} iniciada. Sondeando API hasta que abra... El resultado se notificará al terminar.`).catch(() => {});
         }
         
         setTimeout(() => {
