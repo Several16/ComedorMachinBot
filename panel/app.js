@@ -32,6 +32,7 @@
         accountsPage: 1,
         accountsPerPage: 10,
         searchQuery: '',
+        groupFilter: '',
     };
 
     // ── DOM References ─────────────────────────────────────────
@@ -64,11 +65,13 @@
         inputDni: $('#inputDni'),
         inputCode: $('#inputCode'),
         inputName: $('#inputName'),
+        inputGroup: $('#inputGroup'),
         bulkImportBtn: $('#bulkImportBtn'),
         bulkImportText: $('#bulkImportText'),
         accountsBody: $('#accountsBody'),
         accountsCount: $('#accountsCount'),
         searchAccountInput: $('#searchAccountInput'),
+        groupFilterSelect: $('#groupFilterSelect'),
         prevPageBtn: $('#prevPageBtn'),
         nextPageBtn: $('#nextPageBtn'),
         pageIndicator: $('#pageIndicator'),
@@ -377,6 +380,17 @@
     function renderAccounts() {
         let accounts = state.accounts || [];
 
+        // Update group dropdown options
+        const groups = [...new Set(accounts.map(a => a.grupo || 'Sin Grupo'))].sort();
+        const currentGroup = state.groupFilter;
+        DOM.groupFilterSelect.innerHTML = '<option value="">Todos los grupos</option>' + 
+            groups.map(g => `<option value="${escapeHtml(g)}"${currentGroup === g ? ' selected' : ''}>${escapeHtml(g)}</option>`).join('');
+
+        // Apply group filter
+        if (state.groupFilter) {
+            accounts = accounts.filter(a => (a.grupo || 'Sin Grupo') === state.groupFilter);
+        }
+
         // Apply search filter
         if (state.searchQuery) {
             const q = state.searchQuery.toLowerCase();
@@ -421,6 +435,7 @@
             const dni = a.dni || a.DNI || '—';
             const code = a.codigo || a.code || a.Code || '—';
             const name = a.nombre || a.name || a.Name || '—';
+            const grupo = a.grupo || 'Sin Grupo';
             const status = a.status || a.estado || a.lastStatus || null;
 
             let badgeHtml = '<span class="badge badge-neutral">—</span>';
@@ -440,6 +455,7 @@
                     <td>${escapeHtml(String(dni))}</td>
                     <td>${escapeHtml(String(code))}</td>
                     <td>${escapeHtml(String(name))}</td>
+                    <td><span class="badge badge-neutral">${escapeHtml(String(grupo))}</span></td>
                     <td>${badgeHtml}</td>
                     <td>
                         <button class="btn-delete-sm" data-dni="${escapeHtml(String(dni))}" title="Eliminar cuenta">
@@ -460,14 +476,15 @@
         const dni = DOM.inputDni.value.trim();
         const codigo = DOM.inputCode.value.trim();
         const nombre = DOM.inputName.value.trim();
+        const grupo = DOM.inputGroup ? DOM.inputGroup.value.trim() : '';
 
         if (!dni || !codigo || !nombre) {
-            toast('warning', 'Campos incompletos', 'Todos los campos son obligatorios');
+            toast('warning', 'Campos incompletos', 'Todos los campos obligatorios deben llenarse');
             return;
         }
 
         try {
-            const { ok, data } = await api('POST', '/api/dashboard/accounts/add', { dni, codigo, nombre });
+            const { ok, data } = await api('POST', '/api/dashboard/accounts/add', { dni, codigo, nombre, grupo });
             if (ok) {
                 toast('success', 'Cuenta agregada', `${nombre} (${dni})`);
                 DOM.addAccountForm.reset();
@@ -921,6 +938,14 @@
             state.accountsPage = 1; // Reset to first page on search
             renderAccounts();
         });
+
+        if (DOM.groupFilterSelect) {
+            DOM.groupFilterSelect.addEventListener('change', (e) => {
+                state.groupFilter = e.target.value;
+                state.accountsPage = 1;
+                renderAccounts();
+            });
+        }
 
         DOM.prevPageBtn.addEventListener('click', () => {
             if (state.accountsPage > 1) {

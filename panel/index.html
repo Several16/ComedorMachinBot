@@ -192,6 +192,10 @@
                                     <label class="form-label">Nombre</label>
                                     <input type="text" id="inputName" class="form-input" placeholder="Juan Pérez" required>
                                 </div>
+                                <div class="form-group">
+                                    <label class="form-label">Grupo (Opcional)</label>
+                                    <input type="text" id="inputGroup" class="form-input" placeholder="Ej: Amigos">
+                                </div>
                             </div>
                             <button type="submit" class="btn btn-primary">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -208,7 +212,7 @@
                                 Importación Masiva (JSON)
                             </summary>
                             <div class="bulk-import-body">
-                                <textarea id="bulkImportText" class="form-textarea" rows="4" placeholder='[{"dni":"12345678","codigo":"20210001","nombre":"Juan"}]'></textarea>
+                                <textarea id="bulkImportText" class="form-textarea" rows="4" placeholder='[{"dni":"12345678","codigo":"20210001","nombre":"Juan","grupo":"Amigos"}]'></textarea>
                                 <button type="button" class="btn btn-primary btn-sm" id="bulkImportBtn">Importar</button>
                             </div>
                         </details>
@@ -217,8 +221,15 @@
                     <!-- Accounts Table -->
                     <div class="glass-card table-card">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding: 0 0.5rem;">
-                            <div class="form-group" style="margin-bottom: 0; flex: 1; max-width: 300px;">
-                                <input type="text" id="searchAccountInput" class="form-input" placeholder="🔍 Buscar por Nombre, DNI o Código..." autocomplete="off">
+                            <div style="display: flex; gap: 0.5rem; flex: 1; max-width: 450px;">
+                                <div class="form-group" style="margin-bottom: 0; flex: 1;">
+                                    <input type="text" id="searchAccountInput" class="form-input" placeholder="🔍 Buscar por Nombre, DNI o Código..." autocomplete="off">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0; min-width: 120px;">
+                                    <select id="groupFilterSelect" class="form-input" style="appearance: auto;">
+                                        <option value="">Todos los grupos</option>
+                                    </select>
+                                </div>
                             </div>
                             <span class="text-muted" id="accountsCount" style="font-size: 0.9rem; margin-left: 1rem;">Cargando...</span>
                         </div>
@@ -229,6 +240,7 @@
                                         <th>DNI</th>
                                         <th>Código</th>
                                         <th>Nombre</th>
+                                        <th>Grupo</th>
                                         <th>Estado</th>
                                         <th></th>
                                     </tr>

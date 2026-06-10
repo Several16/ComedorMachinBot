@@ -2352,6 +2352,7 @@ app.get("/api/dashboard/accounts", panelAuth, (_req, res) => {
         dni: acc.dni,
         codigo: acc.codigo,
         nombre: acc.nombre || '',
+        grupo: acc.grupo || 'Sin Grupo',
         dias: acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'], // Default lun-vie
       });
     }
@@ -2361,7 +2362,7 @@ app.get("/api/dashboard/accounts", panelAuth, (_req, res) => {
 
 // POST /api/dashboard/accounts/add - Add account to a user
 app.post("/api/dashboard/accounts/add", panelAuth, (req, res) => {
-  const { chatId, dni, codigo, nombre } = req.body || {};
+  const { chatId, dni, codigo, nombre, grupo } = req.body || {};
   if (!chatId || !dni || !codigo) {
     return res.status(400).json({ ok: false, message: "chatId, dni, and codigo are required" });
   }
@@ -2371,7 +2372,12 @@ app.post("/api/dashboard/accounts/add", panelAuth, (req, res) => {
   if (user.autoRun.accounts.some(a => a.dni === String(dni))) {
     return res.status(409).json({ ok: false, message: `DNI ${dni} already exists for this user` });
   }
-  user.autoRun.accounts.push({ dni: String(dni), codigo: String(codigo), nombre: String(nombre || '') });
+  user.autoRun.accounts.push({ 
+    dni: String(dni), 
+    codigo: String(codigo), 
+    nombre: String(nombre || ''),
+    grupo: String(grupo || 'Sin Grupo')
+  });
   saveState();
   res.json({ ok: true, message: "Account added", total: user.autoRun.accounts.length });
 });
