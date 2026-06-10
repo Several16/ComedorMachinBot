@@ -74,34 +74,36 @@ function distributeAccounts(accounts, workerCount) {
 // ══════════════════════════════════════════
 // Ejecutar distribuidamente en workers
 // ══════════════════════════════════════════
-async function executeDistributed(accounts, config = {}, onProgress = null) {
+async function executeDistributed(accounts, config = {}, onProgress = null, logger = null) {
+  const log = logger || ((...args) => console.log(...args));
+  const logError = logger || ((...args) => console.error(...args));
   const workerUrls = getWorkerUrls();
   const apiKey = getApiKey();
   const jobId = `exec-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   const startTime = Date.now();
 
-  console.log(`[COORD] ═══════════════════════════════`);
-  console.log(`[COORD] Job: ${jobId}`);
-  console.log(`[COORD] Cuentas totales: ${accounts.length}`);
-  console.log(`[COORD] Workers configurados: ${workerUrls.length}`);
+  log(`[COORD] ═══════════════════════════════`);
+  log(`[COORD] Job: ${jobId}`);
+  log(`[COORD] Cuentas totales: ${accounts.length}`);
+  log(`[COORD] Workers configurados: ${workerUrls.length}`);
 
   // 1. Health check
-  console.log(`[COORD] Verificando workers...`);
+  log(`[COORD] Verificando workers...`);
   const health = await healthCheckAll();
   const onlineWorkers = health.filter(w => w.status === "online");
   const offlineWorkers = health.filter(w => w.status !== "online");
 
   for (const w of health) {
-    console.log(`[COORD]   ${w.status === "online" ? "🟢" : "🔴"} ${w.url} → ${w.status} ${w.workerId ? `(${w.workerId})` : ""}`);
+    log(`[COORD]   ${w.status === "online" ? "🟢" : "🔴"} ${w.url} → ${w.status} ${w.workerId ? `(${w.workerId})` : ""}`);
   }
 
   if (offlineWorkers.length > 0) {
-    console.log(`[COORD] ⚠️ ${offlineWorkers.length} worker(s) offline: ${offlineWorkers.map(w => w.url).join(", ")}`);
+    log(`[COORD] ⚠️ ${offlineWorkers.length} worker(s) offline: ${offlineWorkers.map(w => w.url).join(", ")}`);
   }
 
   // 2. Fallback: si no hay workers online, ejecutar localmente
   if (onlineWorkers.length === 0) {
-    console.log(`[COORD] ❌ No hay workers online. Ejecutando LOCALMENTE...`);
+    log(`[COORD] ❌ No hay workers online. Ejecutando LOCALMENTE...`);
     const { executeRawBatch } = require("./charola-engine");
     const result = await executeRawBatch(accounts, config);
     return {
@@ -117,14 +119,14 @@ async function executeDistributed(accounts, config = {}, onProgress = null) {
   const onlineUrls = onlineWorkers.map(w => w.url);
   const groups = distributeAccounts(accounts, onlineUrls.length);
 
-  console.log(`[COORD] Distribución:`);
+  log(`[COORD] Distribución:`);
   onlineUrls.forEach((url, i) => {
     const workerName = onlineWorkers[i].workerId || `worker-${i + 1}`;
-    console.log(`[COORD]   ${workerName} (${url}): ${groups[i].length} cuentas`);
+    log(`[COORD]   ${workerName} (${url}): ${groups[i].length} cuentas`);
   });
 
   // 4. Enviar a todos los workers en PARALELO
-  console.log(`[COORD] Enviando a ${onlineUrls.length} workers simultáneamente...`);
+  log(`[COORD] Enviando a ${onlineUrls.length} workers simultáneamente...`);
 
   const workerPromises = onlineUrls.map(async (url, i) => {
     const workerName = onlineWorkers[i].workerId || `worker-${i + 1}`;
@@ -135,7 +137,7 @@ async function executeDistributed(accounts, config = {}, onProgress = null) {
     }
 
     try {
-      console.log(`[COORD] → Enviando ${workerAccounts.length} cuentas a ${workerName}...`);
+      log(`[COORD] → Enviando ${workerAccounts.length} cuentas a ${workerName}...`);
 
       const res = await fetch(`${url}/execute`, {
         method: "POST",
@@ -159,17 +161,17 @@ async function executeDistributed(accounts, config = {}, onProgress = null) {
       });
 
       const data = await res.json();
-      console.log(`[COORD] ← ${workerName}: ${data.successes}/${data.total} éxitos (${Math.round(data.durationMs / 1000)}s)`);
+      log(`[COORD] ← ${workerName}: ${data.successes}/${data.total} éxitos (${Math.round(data.durationMs / 1000)}s)`);
 
       if (onProgress) onProgress({ workerId: workerName, ...data });
 
       return { workerId: workerName, url, ...data };
 
     } catch (e) {
-      console.error(`[COORD] ← ${workerName}: ERROR — ${e.message}`);
+      logError(`[COORD] ← ${workerName}: ERROR — ${e.message}`);
 
       // Fallback: intentar ejecutar localmente las cuentas de este worker
-      console.log(`[COORD] Ejecutando cuentas de ${workerName} LOCALMENTE como fallback...`);
+      log(`[COORD] Ejecutando cuentas de ${workerName} LOCALMENTE como fallback...`);
       try {
         const { executeRawBatch } = require("./charola-engine");
         const localResult = await executeRawBatch(workerAccounts, config);
@@ -219,22 +221,22 @@ async function executeDistributed(accounts, config = {}, onProgress = null) {
   const durationMs = Date.now() - startTime;
 
   // 6. Resumen
-  console.log(`\n[COORD] ═══════════════════════════════`);
-  console.log(`[COORD] RESUMEN FINAL`);
-  console.log(`[COORD] Total: ${accounts.length} | Éxitos: ${totalSuccesses} | Fallos: ${totalFailures}`);
-  console.log(`[COORD] Duración total: ${Math.round(durationMs / 1000)}s`);
+  log(`\n[COORD] ═══════════════════════════════`);
+  log(`[COORD] RESUMEN FINAL`);
+  log(`[COORD] Total: ${accounts.length} | Éxitos: ${totalSuccesses} | Fallos: ${totalFailures}`);
+  log(`[COORD] Duración total: ${Math.round(durationMs / 1000)}s`);
   for (const wr of workerResults) {
     const icon = wr.error ? "🔴" : (wr.failures === 0 ? "🟢" : "🟡");
-    console.log(`[COORD]   ${icon} ${wr.workerId}: ${wr.successes || 0}/${wr.total || 0} éxitos${wr.fallback ? " (fallback local)" : ""}`);
+    log(`[COORD]   ${icon} ${wr.workerId}: ${wr.successes || 0}/${wr.total || 0} éxitos${wr.fallback ? " (fallback local)" : ""}`);
   }
-  console.log(`[COORD] ═══════════════════════════════\n`);
+  log(`[COORD] ═══════════════════════════════\n`);
 
   for (const r of allResults) {
     const label = r.nombre ? `${r.nombre} (${r.dni})` : `DNI: ${r.dni}`;
     if (r.success) {
-      console.log(`[COORD]   ✅ ${label}`);
+      log(`[COORD]   ✅ ${label}`);
     } else {
-      console.log(`[COORD]   ❌ ${label} → ${r.reason || "desconocido"}`);
+      log(`[COORD]   ❌ ${label} → ${r.reason || "desconocido"}`);
     }
   }
 

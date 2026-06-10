@@ -571,6 +571,14 @@ async function notifyJobFinished(exitInfo) {
 // ── Modo Distribuido: usar coordinador para ejecutar en workers ──
 async function startDistributedBot(chatId, config) {
   const ownerChatId = String(chatId);
+  const ownRunningJobs = listRunningJobs(ownerChatId);
+  
+  // Protección contra ejecuciones duplicadas
+  const alreadyDistributed = ownRunningJobs.some(j => j.distributed);
+  if (alreadyDistributed) {
+    return { started: false, reason: "Ya hay una ejecución distribuida en curso para este usuario." };
+  }
+
   const jobId = generateJobId(ownerChatId);
   const logPath = path.join(LOGS_DIR, `tg-${ownerChatId}-${stamp()}-${jobId}.log`);
   const startedAt = nowIso();
@@ -586,7 +594,7 @@ async function startDistributedBot(chatId, config) {
   }
 
   // Registrar como job activo
-  const fakeJob = {
+  const distributedJob = {
     jobId,
     chatId: ownerChatId,
     pid: process.pid,
@@ -598,108 +606,109 @@ async function startDistributedBot(chatId, config) {
     process: null,
     distributed: true
   };
-  runningJobs.set(jobId, fakeJob);
+  runningJobs.set(jobId, distributedJob);
   startLoadingIndicator(ownerChatId);
 
-  // Ejecutar en background
-  (async () => {
-    try {
-      // Redirigir console.log del coordinador al log file
-      const origLog = console.log;
-      const origError = console.error;
-      const logToFile = (...args) => {
-        const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
-        stream.write(msg + '\n');
-        origLog.apply(console, args);
+  // Logger seguro por-job (no modifica console.log global)
+  const jobLogger = (...args) => {
+    const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+    stream.write(msg + '\n');
+    console.log(msg); // Escribir TAMBIÉN a stdout sin modificar console.log
 
-        // Emitir notificaciones de Telegram en tiempo real
-        if (telegramBotClient) {
-          if (msg.includes('[RAW_SUCCESS] DNI:')) {
-            const m = msg.match(/\[RAW_SUCCESS\] DNI: (\d+)/);
-            if (m) telegramBotClient.sendMessage(ownerChatId, `⚡ ¡Cupo asegurado (Modo Crudo)!\nDNI: ${m[1]}`).catch(()=>{});
-          }
-          if (msg.includes('[RAW_FAIL] DNI:')) {
-            const m = msg.match(/\[RAW_FAIL\] DNI: (\d+) \| ERROR: (.+)/);
-            if (m) telegramBotClient.sendMessage(ownerChatId, `❌ Sin cupo (RAW)\nDNI: ${m[1]}\nRazón: ${m[2]}`).catch(()=>{});
-          }
-          if (msg.includes('API ABIERTA')) {
-            telegramBotClient.sendMessage(ownerChatId, `🟢 API detectada ABIERTA. Lanzando ataque distribuido...`).catch(()=>{});
-          }
-        }
-      };
-      console.log = logToFile;
-      console.error = (...args) => {
-        const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
-        stream.write(`[ERROR] ${msg}\n`);
-        origError.apply(console, args);
-      };
-
-      const result = await executeDistributed(accounts, config);
-
-      // Escribir resumen en formato compatible con notifyJobFinished
-      const successes = result.successes;
-      const total = result.total;
-      stream.write(`\n[RAW_RESUMEN] ═══════════════════════════════\n`);
-      stream.write(`[RAW_RESUMEN] Total: ${total} | Éxitos: ${successes} | Fallos: ${result.failures}\n`);
-      for (const r of result.results) {
-        const label = r.nombre ? `${r.nombre} (${r.dni})` : `DNI: ${r.dni}`;
-        if (r.success) {
-          stream.write(`[RAW_RESUMEN]   ✅ ${label}\n`);
-        } else {
-          stream.write(`[RAW_RESUMEN]   ❌ ${label} → ${r.reason || 'desconocido'}\n`);
-        }
+    // Emitir notificaciones de Telegram en tiempo real
+    if (telegramBotClient) {
+      if (msg.includes('[RAW_SUCCESS] DNI:')) {
+        const m = msg.match(/\[RAW_SUCCESS\] DNI: (\d+)/);
+        if (m) telegramBotClient.sendMessage(ownerChatId, `⚡ ¡Cupo asegurado (Modo Crudo)!\nDNI: ${m[1]}`).catch(()=>{});
       }
-      stream.write(`[RAW_RESUMEN] ═══════════════════════════════\n\n`);
-      stream.write(`[${new Date().toLocaleString()}] Ejecución RAW finalizada. Éxitos: ${successes}/${total}\n`);
-
-      // Enviar resumen de Fase 1 por Telegram
-      if (telegramBotClient) {
-        let msg;
-        if (successes > 0 && successes === total) {
-          msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n✅ ¡PERFECTO! Se aseguraron *todos* los cupos: *${successes}/${total}*\n🌐 Workers usados: ${result.totalWorkers}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
-        } else if (successes > 0) {
-          msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n⚠️ Se aseguraron *${successes}/${total}* cupos.\n🌐 Workers usados: ${result.totalWorkers}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
-        } else {
-          msg = `⚠️ *FASE 1 FINALIZADA (DISTRIBUIDO)*\n❌ *0/${total}* cupos asegurados.\n🌐 Workers: ${result.totalWorkers}`;
-        }
-        telegramBotClient.sendMessage(ownerChatId, msg, {parse_mode: "Markdown"}).catch(()=>{});
+      if (msg.includes('[RAW_FAIL] DNI:')) {
+        const m = msg.match(/\[RAW_FAIL\] DNI: (\d+) \| ERROR: (.+)/);
+        if (m) telegramBotClient.sendMessage(ownerChatId, `❌ Sin cupo (RAW)\nDNI: ${m[1]}\nRazón: ${m[2]}`).catch(()=>{});
       }
-
-      // Restaurar console
-      console.log = origLog;
-      console.error = origError;
-
-      // Finalizar job
-      const exitCode = successes > 0 ? 0 : 1;
-      stream.write(`\n[${nowIso()}] Bot finalizado con código ${exitCode}\n`);
-      stream.end();
-      runningJobs.delete(jobId);
-      if (!listRunningJobs(ownerChatId).length) {
-        stopLoadingIndicator(ownerChatId);
+      if (msg.includes('API ABIERTA')) {
+        telegramBotClient.sendMessage(ownerChatId, `🟢 API detectada ABIERTA. Lanzando ataque distribuido...`).catch(()=>{});
       }
-      const exitInfo = { jobId, chatId: ownerChatId, pid: process.pid, code: exitCode, at: nowIso(), logPath, dni: "" };
-      pushRecentExit(exitInfo);
-      await notifyJobFinished(exitInfo);
+    }
+  };
 
-    } catch (error) {
-      console.error(`[DISTRIBUTED] Error fatal:`, error.message);
-      stream.write(`\n[ERROR] ${error.message}\n`);
-      stream.write(`\n[${nowIso()}] Bot finalizado con código 1\n`);
-      stream.end();
-      runningJobs.delete(jobId);
+  try {
+    const result = await executeDistributed(accounts, config, null, jobLogger);
+
+    // Escribir resumen en formato compatible con notifyJobFinished
+    const successes = result.successes;
+    const total = result.total;
+    stream.write(`\n[RAW_RESUMEN] ═══════════════════════════════\n`);
+    stream.write(`[RAW_RESUMEN] Total: ${total} | Éxitos: ${successes} | Fallos: ${result.failures}\n`);
+    for (const r of result.results) {
+      const label = r.nombre ? `${r.nombre} (${r.dni})` : `DNI: ${r.dni}`;
+      if (r.success) {
+        stream.write(`[RAW_RESUMEN]   ✅ ${label}\n`);
+      } else {
+        stream.write(`[RAW_RESUMEN]   ❌ ${label} → ${r.reason || 'desconocido'}\n`);
+      }
+    }
+    stream.write(`[RAW_RESUMEN] ═══════════════════════════════\n\n`);
+    stream.write(`[${new Date().toLocaleString()}] Ejecución RAW finalizada. Éxitos: ${successes}/${total}\n`);
+
+    // Enviar resumen de Fase 1 por Telegram
+    if (telegramBotClient) {
+      let msg;
+      if (successes > 0 && successes === total) {
+        msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n✅ ¡PERFECTO! Se aseguraron *todos* los cupos: *${successes}/${total}*\n🌐 Workers usados: ${result.totalWorkers}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
+      } else if (successes > 0) {
+        msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n⚠️ Se aseguraron *${successes}/${total}* cupos.\n🌐 Workers usados: ${result.totalWorkers}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
+      } else {
+        msg = `⚠️ *FASE 1 FINALIZADA (DISTRIBUIDO)*\n❌ *0/${total}* cupos asegurados.\n🌐 Workers: ${result.totalWorkers}`;
+      }
+      telegramBotClient.sendMessage(ownerChatId, msg, {parse_mode: "Markdown"}).catch(()=>{});
+    }
+
+    // Finalizar job
+    const exitCode = successes > 0 ? 0 : 1;
+    stream.write(`\n[${nowIso()}] Bot finalizado con código ${exitCode}\n`);
+    stream.end();
+    runningJobs.delete(jobId);
+    if (!listRunningJobs(ownerChatId).length) {
       stopLoadingIndicator(ownerChatId);
     }
-  })();
+    const exitInfo = { jobId, chatId: ownerChatId, pid: process.pid, code: exitCode, at: nowIso(), logPath, dni: "" };
+    pushRecentExit(exitInfo);
+    await notifyJobFinished(exitInfo);
 
-  return {
-    started: true,
-    jobId,
-    pid: process.pid,
-    logPath,
-    runningGlobal: runningJobs.size,
-    runningUser: listRunningJobs(ownerChatId).length,
-    distributed: true
-  };
+    return {
+      started: true,
+      jobId,
+      pid: process.pid,
+      logPath,
+      runningGlobal: runningJobs.size,
+      runningUser: listRunningJobs(ownerChatId).length,
+      distributed: true
+    };
+
+  } catch (error) {
+    console.error(`[DISTRIBUTED] Error fatal:`, error.message);
+    stream.write(`\n[ERROR] ${error.message}\n`);
+    stream.write(`\n[${nowIso()}] Bot finalizado con código 1\n`);
+    stream.end();
+    runningJobs.delete(jobId);
+    stopLoadingIndicator(ownerChatId);
+
+    // Notificar el error por Telegram
+    if (telegramBotClient) {
+      telegramBotClient.sendMessage(ownerChatId, `❌ *ERROR DISTRIBUIDO*\n${error.message}`, {parse_mode: "Markdown"}).catch(()=>{});
+    }
+
+    return {
+      started: true,  // SÍ se inició, pero falló
+      jobId,
+      pid: process.pid,
+      logPath,
+      runningGlobal: runningJobs.size,
+      runningUser: listRunningJobs(ownerChatId).length,
+      distributed: true,
+      error: error.message
+    };
+  }
 }
 
 function startBot(chatId, config) {
