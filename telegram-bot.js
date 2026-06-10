@@ -2343,9 +2343,8 @@ app.get("/api/dashboard/workers", panelAuth, async (_req, res) => {
 // GET /api/dashboard/accounts - All accounts from all users
 app.get("/api/dashboard/accounts", panelAuth, (_req, res) => {
   const allAccounts = [];
-  for (const [chatId, userSettings] of Object.entries(settings)) {
-    if (chatId === 'adminChatId') continue;
-    const autoRun = userSettings?.autoRun;
+  for (const [chatId, user] of Object.entries(licenses.users)) {
+    const autoRun = user?.autoRun;
     if (!autoRun || !Array.isArray(autoRun.accounts)) continue;
     for (const acc of autoRun.accounts) {
       allAccounts.push({
@@ -2380,12 +2379,12 @@ app.post("/api/dashboard/accounts/add", panelAuth, (req, res) => {
 // DELETE /api/dashboard/accounts/:chatId/:dni - Remove account
 app.delete("/api/dashboard/accounts/:chatId/:dni", panelAuth, (req, res) => {
   const { chatId, dni } = req.params;
-  if (!settings[chatId]?.autoRun?.accounts) {
+  if (!licenses.users[chatId]?.autoRun?.accounts) {
     return res.status(404).json({ ok: false, message: "User not found" });
   }
-  const before = settings[chatId].autoRun.accounts.length;
-  settings[chatId].autoRun.accounts = settings[chatId].autoRun.accounts.filter(a => a.dni !== dni);
-  const after = settings[chatId].autoRun.accounts.length;
+  const before = licenses.users[chatId].autoRun.accounts.length;
+  licenses.users[chatId].autoRun.accounts = licenses.users[chatId].autoRun.accounts.filter(a => a.dni !== dni);
+  const after = licenses.users[chatId].autoRun.accounts.length;
   if (before === after) {
     return res.status(404).json({ ok: false, message: "Account not found" });
   }
@@ -2437,9 +2436,8 @@ app.get("/api/dashboard/history", panelAuth, (_req, res) => {
 // GET /api/dashboard/stats - Quick stats
 app.get("/api/dashboard/stats", panelAuth, (_req, res) => {
   let totalAccounts = 0;
-  for (const [chatId, userSettings] of Object.entries(settings)) {
-    if (chatId === 'adminChatId') continue;
-    totalAccounts += (userSettings?.autoRun?.accounts || []).length;
+  for (const [chatId, user] of Object.entries(licenses.users)) {
+    totalAccounts += (user?.autoRun?.accounts || []).length;
   }
   
   // Get last run stats
@@ -2507,9 +2505,8 @@ app.get("/api/dashboard/health-check", panelAuth, async (_req, res) => {
 // GET /api/dashboard/users - List all users with their account counts  
 app.get("/api/dashboard/users", panelAuth, (_req, res) => {
   const users = [];
-  for (const [chatId, userSettings] of Object.entries(settings)) {
-    if (chatId === 'adminChatId') continue;
-    const autoRun = userSettings?.autoRun;
+  for (const [chatId, user] of Object.entries(licenses.users)) {
+    const autoRun = user?.autoRun;
     if (!autoRun) continue;
     users.push({
       chatId,
@@ -2532,10 +2529,10 @@ app.put("/api/dashboard/accounts/schedule", panelAuth, (req, res) => {
   const validDays = ['lun', 'mar', 'mie', 'jue', 'vie', 'sab', 'dom'];
   const filtered = dias.filter(d => validDays.includes(d));
   
-  if (!settings[chatId]?.autoRun?.accounts) {
+  if (!licenses.users[chatId]?.autoRun?.accounts) {
     return res.status(404).json({ ok: false, message: "User not found" });
   }
-  const account = settings[chatId].autoRun.accounts.find(a => a.dni === String(dni));
+  const account = licenses.users[chatId].autoRun.accounts.find(a => a.dni === String(dni));
   if (!account) {
     return res.status(404).json({ ok: false, message: "Account not found" });
   }
@@ -2553,14 +2550,14 @@ app.put("/api/dashboard/accounts/schedule/bulk", panelAuth, (req, res) => {
   const validDays = ['lun', 'mar', 'mie', 'jue', 'vie', 'sab', 'dom'];
   const filtered = dias.filter(d => validDays.includes(d));
   
-  if (!settings[chatId]?.autoRun?.accounts) {
+  if (!licenses.users[chatId]?.autoRun?.accounts) {
     return res.status(404).json({ ok: false, message: "User not found" });
   }
-  for (const acc of settings[chatId].autoRun.accounts) {
+  for (const acc of licenses.users[chatId].autoRun.accounts) {
     acc.dias = [...filtered];
   }
   saveState();
-  res.json({ ok: true, message: `Schedule updated for all accounts`, dias: filtered, count: settings[chatId].autoRun.accounts.length });
+  res.json({ ok: true, message: `Schedule updated for all accounts`, dias: filtered, count: licenses.users[chatId].autoRun.accounts.length });
 });
 
 // GET /api/dashboard/schedule - Get schedule overview (today's active accounts)
@@ -2574,9 +2571,8 @@ app.get("/api/dashboard/schedule", panelAuth, (_req, res) => {
     schedule[day] = [];
   }
   
-  for (const [chatId, userSettings] of Object.entries(settings)) {
-    if (chatId === 'adminChatId') continue;
-    const accounts = userSettings?.autoRun?.accounts || [];
+  for (const [chatId, user] of Object.entries(licenses.users)) {
+    const accounts = user?.autoRun?.accounts || [];
     for (const acc of accounts) {
       const activeDays = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie']; // Default: lun-vie
       for (const day of activeDays) {
