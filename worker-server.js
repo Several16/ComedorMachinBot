@@ -91,15 +91,6 @@ app.get("/status", (req, res) => {
 // POST /execute — Ejecutar cuentas
 // ══════════════════════════════════════════
 app.post("/execute", async (req, res) => {
-  // No permitir ejecuciones simultáneas
-  if (currentExecution) {
-    return res.status(409).json({
-      error: "Execution already in progress",
-      workerId: WORKER_ID,
-      jobId: currentExecution.jobId
-    });
-  }
-
   const { jobId, accounts, config } = req.body;
 
   if (!accounts || !Array.isArray(accounts) || accounts.length === 0) {
