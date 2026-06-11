@@ -10,29 +10,31 @@
 
 const API_URL = "https://comensales.uncp.edu.pe/api/registros";
 
-// ── Mensajes retryables de la API ──
-const RAW_RETRY_KEYWORDS = [
-  "CUPOS", "HORARIO", "FUERA", "DISPONIBLE", "AGOTADOS",
-  "INTENTE", "MANANA", "NO ENCONTRADO", "NO MATRICULADO"
-];
-
-function isRawRetryable(msg) {
-  const upper = String(msg || "").toUpperCase();
-  return RAW_RETRY_KEYWORDS.some(kw => upper.includes(kw));
-}
-
+// ── Helpers ──
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const FATAL_KEYWORDS = [
+  "DNI NO VALIDO", "CODIGO NO VALIDO", "NO EXISTE", "ELIMINADO",
+  "SUSPENDIDO", "BLOQUEADO", "INHABILITADO", "DATOS INCORRECTOS"
+];
+
+function isFatalError(msg) {
+  const upper = String(msg || "").toUpperCase();
+  return FATAL_KEYWORDS.some(kw => upper.includes(kw));
+}
+
 // ═══════════════════════════════════════════════════════════════
 // WARM-UP: sondear la API hasta que abra y asegure cupo con la sonda
+// FILOSOFÍA: REINTENTAR SIEMPRE salvo éxito definitivo (200/201)
 // ═══════════════════════════════════════════════════════════════
 async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
   const maxWait = maxWaitMs || 10 * 60 * 1000;
   const probeIntervalMs = 1500;
   const startTime = Date.now();
   let attempt = 0;
+  let lastMsg = '';
 
   console.log(`[WARMUP] Sondeando API con DNI ${probeAccount.dni} hasta que abra... (máx ${Math.round(maxWait / 1000)}s)`);
 
@@ -50,28 +52,17 @@ async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
 
       const json = await res.json();
       const msg = String(json.message || "").toUpperCase().trim();
+      lastMsg = json.message || '';
 
       if (attempt <= 3 || attempt % 10 === 0) {
         console.log(`[WARMUP] Intento ${attempt} (${Math.round((Date.now() - startTime) / 1000)}s): code=${json.code} message="${json.message}"`);
       }
 
-      // ÉXITO: API abrió y aseguró cupo para la cuenta sonda
+      // ═══ ÚNICO CASO DE ÉXITO: código 200 o 201 ═══
       if (json.code === 200 || json.code === 201) {
         console.log(`[WARMUP] ¡API ABIERTA! Cupo asegurado en sondeo para DNI ${probeAccount.dni} (intento ${attempt}, ${Math.round((Date.now() - startTime) / 1000)}s)`);
         console.log(`[RAW_SUCCESS] DNI: ${probeAccount.dni}`);
         return { open: true, probeSuccess: true, dni: probeAccount.dni };
-      }
-
-      // API CERRADA: code 404 sin message
-      if (json.code === 404 || !msg || msg === "UNDEFINED" || msg === "NULL") {
-        await sleep(probeIntervalMs);
-        continue;
-      }
-
-      // RETRY KEYWORDS
-      if (isRawRetryable(msg)) {
-        await sleep(probeIntervalMs);
-        continue;
       }
 
       // "YA UTILIZADO" = API activa, ya tiene ticket
@@ -80,9 +71,18 @@ async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
         return { open: true, probeSuccess: true, dni: probeAccount.dni };
       }
 
-      // Respuesta no reconocida = API posiblemente activa
-      console.log(`[WARMUP] API respondió con mensaje no reconocido: code=${json.code} msg="${json.message}". Considerando API abierta.`);
-      return { open: true, probeSuccess: false, dni: probeAccount.dni, reason: json.message };
+      // Error FATAL de datos (DNI inválido, etc.) — no tiene sentido seguir sondeando con esta cuenta
+      if (isFatalError(msg)) {
+        console.log(`[WARMUP] Error fatal de datos: "${json.message}". Considerando API abierta pero sonda falló.`);
+        return { open: true, probeSuccess: false, dni: probeAccount.dni, reason: json.message };
+      }
+
+      // ═══ CUALQUIER OTRA RESPUESTA → REINTENTAR ═══
+      // Esto incluye: 404, 500, "CUPOS AGOTADOS", "FUERA DE HORARIO",
+      // "SERVICIO NO DISPONIBLE", mensajes vacíos, y CUALQUIER
+      // respuesta desconocida. La API no está abierta hasta que
+      // devuelva 200/201.
+      await sleep(probeIntervalMs);
 
     } catch (e) {
       if (attempt <= 3 || attempt % 10 === 0) {
@@ -92,12 +92,13 @@ async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
     }
   }
 
-  console.log(`[WARMUP] Tiempo máximo de espera agotado (${Math.round(maxWait / 1000)}s). Lanzando ataque de todas formas.`);
+  console.log(`[WARMUP] Tiempo máximo de espera agotado (${Math.round(maxWait / 1000)}s). Último msg: "${lastMsg}". Lanzando ataque de todas formas.`);
   return { open: false, probeSuccess: false };
 }
 
 // ═══════════════════════════════════════════════════════════════
 // ATAQUE RAW: procesar UNA cuenta con reintentos agresivos
+// FILOSOFÍA: REINTENTAR SIEMPRE salvo éxito o error fatal de datos
 // ═══════════════════════════════════════════════════════════════
 async function processAccountRawPost(account, config = {}) {
   const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RAW]`;
@@ -118,7 +119,7 @@ async function processAccountRawPost(account, config = {}) {
       const json = await res.json();
       const msg = String(json.message || "").toUpperCase().trim();
 
-      // ÉXITO
+      // ═══ ÉXITO ═══
       if (json.code === 200 || json.code === 201) {
         console.log(`[RAW_SUCCESS] DNI: ${account.dni}`);
         return { success: true, dni: account.dni, nombre: account.nombre };
@@ -130,30 +131,18 @@ async function processAccountRawPost(account, config = {}) {
         return { success: true, dni: account.dni, nombre: account.nombre, note: "Ya tenía ticket" };
       }
 
-      // 404 o sin message = API cerrada/no lista, REINTENTAR
-      if (json.code === 404 || !msg || msg === "UNDEFINED" || msg === "NULL") {
-        if (attempt % 20 === 0) console.log(`${prefix} Intento ${attempt}: API respondió code=${json.code} sin mensaje, reintentando...`);
-        await sleep(retryDelayPostMs);
-        continue;
+      // ═══ ERROR FATAL DE DATOS → no reintentar ═══
+      if (isFatalError(msg)) {
+        console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR FATAL: ${json.message} (code=${json.code})`);
+        return { success: false, dni: account.dni, nombre: account.nombre, reason: json.message };
       }
 
-      // Keywords retryables
-      if (isRawRetryable(msg)) {
-        if (attempt % 15 === 0) console.log(`${prefix} Intento ${attempt}: ${json.message}`);
-        await sleep(retryDelayPostMs);
-        continue;
+      // ═══ CUALQUIER OTRA RESPUESTA → REINTENTAR ═══
+      // 404, 500, "CUPOS", "HORARIO", mensajes desconocidos — TODO se reintenta
+      if (attempt % 15 === 0) {
+        console.log(`${prefix} Intento ${attempt}/${maxPostAttempts}: code=${json.code} msg="${json.message || 'sin mensaje'}", reintentando...`);
       }
-
-      // HTTP 500 = lock de BD → REINTENTAR
-      if (json.code === 500) {
-        if (attempt % 10 === 0) console.log(`${prefix} Intento ${attempt}: code=500 msg="${json.message || 'sin mensaje'}", reintentando...`);
-        await sleep(retryDelayPostMs);
-        continue;
-      }
-
-      // Error fatal REAL
-      console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: ${json.message} (code=${json.code})`);
-      return { success: false, dni: account.dni, nombre: account.nombre, reason: json.message };
+      await sleep(retryDelayPostMs);
 
     } catch (e) {
       if (attempt % 15 === 0) console.log(`${prefix} Intento ${attempt}: Timeout/Error red (${e.message}), reintentando...`);
@@ -197,6 +186,12 @@ async function processAccountRawRescue(account, config = {}) {
       if (msg.includes("YA UTILIZADO")) {
         console.log(`[RAW_SUCCESS] DNI: ${account.dni} (rescate: ticket ya existía)`);
         return { success: true, dni: account.dni, nombre: account.nombre, note: "Ya tenía ticket" };
+      }
+
+      // Error fatal de datos — no reintentar
+      if (isFatalError(msg)) {
+        console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR FATAL (rescate): ${json.message}`);
+        return { success: false, dni: account.dni, nombre: account.nombre, reason: json.message };
       }
 
       if (msg.includes("AGOTADOS") || msg.includes("SIN CUPOS")) {
