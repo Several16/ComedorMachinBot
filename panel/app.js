@@ -458,7 +458,7 @@
                     <td><span class="badge badge-neutral">${escapeHtml(String(grupo))}</span></td>
                     <td>${badgeHtml}</td>
                     <td>
-                        <button class="btn-delete-sm" data-dni="${escapeHtml(String(dni))}" title="Eliminar cuenta">
+                        <button class="btn-delete-sm" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" title="Eliminar cuenta">
                             ✕
                         </button>
                     </td>
@@ -467,7 +467,7 @@
 
         // Attach delete handlers
         DOM.accountsBody.querySelectorAll('.btn-delete-sm').forEach(btn => {
-            btn.addEventListener('click', () => deleteAccount(btn.dataset.dni));
+            btn.addEventListener('click', () => deleteAccount(btn.dataset.chatid || 'any', btn.dataset.dni));
         });
     }
 
@@ -498,7 +498,7 @@
         }
     }
 
-    async function deleteAccount(dni) {
+    async function deleteAccount(chatId, dni) {
         const confirmed = await confirm(
             '🗑️',
             'Eliminar Cuenta',
@@ -508,7 +508,7 @@
         if (!confirmed) return;
 
         try {
-            const { ok, data } = await api('DELETE', `/api/dashboard/accounts/${dni}`);
+            const { ok, data } = await api('DELETE', `/api/dashboard/accounts/${chatId}/${dni}`);
             if (ok) {
                 toast('success', 'Cuenta eliminada', `DNI: ${dni}`);
                 fetchAccounts();
@@ -546,6 +546,7 @@
                     dni: acc.dni || acc.DNI,
                     codigo: acc.codigo || acc.code,
                     nombre: acc.nombre || acc.name,
+                    grupo: acc.grupo || acc.group || '',
                 });
                 if (ok) added++; else errors++;
             } catch {
@@ -775,9 +776,13 @@
     const DAY_LABELS = { lun: 'LUN', mar: 'MAR', mie: 'MIE', jue: 'JUE', vie: 'VIE', sab: 'SAB', dom: 'DOM' };
 
     async function fetchSchedule() {
-        const { ok, data } = await api('GET', '/api/dashboard/accounts');
-        if (ok && data.ok) {
-            renderSchedule(data.accounts || []);
+        try {
+            const { ok, data } = await api('GET', '/api/dashboard/accounts');
+            if (ok && data.ok) {
+                renderSchedule(data.accounts || []);
+            }
+        } catch (err) {
+            console.error('Schedule fetch error:', err);
         }
     }
 
@@ -875,16 +880,22 @@
         btn.classList.toggle('active');
         btn.textContent = isCurrentlyActive ? '❌' : '✅';
 
-        const { ok, data } = await api('PUT', '/api/dashboard/accounts/schedule', { chatId, dni, dias: newDias });
-        if (ok && data.ok) {
-            acc.dias = data.dias;
-            // Update today count
-            updateTodayCount();
-        } else {
-            // Revert
+        try {
+            const { ok, data } = await api('PUT', '/api/dashboard/accounts/schedule', { chatId, dni, dias: newDias });
+            if (ok && data.ok) {
+                acc.dias = data.dias;
+                updateTodayCount();
+            } else {
+                // Revert
+                btn.classList.toggle('active');
+                btn.textContent = isCurrentlyActive ? '✅' : '❌';
+                toast('error', 'Error', data?.message || 'No se pudo actualizar el horario');
+            }
+        } catch (err) {
+            // Revert on network error
             btn.classList.toggle('active');
             btn.textContent = isCurrentlyActive ? '✅' : '❌';
-            toast('error', 'Error', data?.message || 'No se pudo actualizar el horario');
+            toast('error', 'Error de conexión', 'No se pudo conectar con el servidor');
         }
     }
 
@@ -911,17 +922,21 @@
 
         const dias = ['lun', 'mar', 'mie', 'jue', 'vie'];
         let success = 0;
-        for (const chatId of Object.keys(users)) {
-            const { ok } = await api('PUT', '/api/dashboard/accounts/schedule/bulk', { chatId, dias });
-            if (ok) success++;
-        }
+        try {
+            for (const chatId of Object.keys(users)) {
+                const { ok } = await api('PUT', '/api/dashboard/accounts/schedule/bulk', { chatId, dias });
+                if (ok) success++;
+            }
 
-        if (success > 0) {
-            toast('success', 'Horario actualizado', `Todas las cuentas activadas Lun-Vie`);
-            await fetchAccounts();
-            fetchSchedule();
-        } else {
-            toast('error', 'Error', 'No se pudo actualizar el horario');
+            if (success > 0) {
+                toast('success', 'Horario actualizado', `Todas las cuentas activadas Lun-Vie`);
+                await fetchAccounts();
+                fetchSchedule();
+            } else {
+                toast('error', 'Error', 'No se pudo actualizar el horario');
+            }
+        } catch (err) {
+            toast('error', 'Error de conexión', 'No se pudo conectar con el servidor');
         }
     }
 

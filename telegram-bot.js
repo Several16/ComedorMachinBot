@@ -2362,11 +2362,16 @@ app.get("/api/dashboard/accounts", panelAuth, (_req, res) => {
 
 // POST /api/dashboard/accounts/add - Add account to a user
 app.post("/api/dashboard/accounts/add", panelAuth, (req, res) => {
-  const { chatId, dni, codigo, nombre, grupo } = req.body || {};
-  if (!chatId || !dni || !codigo) {
-    return res.status(400).json({ ok: false, message: "chatId, dni, and codigo are required" });
+  const { chatId: rawChatId, dni, codigo, nombre, grupo } = req.body || {};
+  if (!dni || !codigo) {
+    return res.status(400).json({ ok: false, message: "dni and codigo are required" });
   }
-  const user = ensureUserAutoRun(chatId);
+  // Use provided chatId, or fall back to adminChatId
+  const resolvedChatId = rawChatId || adminChatId();
+  if (!resolvedChatId) {
+    return res.status(400).json({ ok: false, message: "No chatId provided and no admin configured. Use /hacer_admin in Telegram first." });
+  }
+  const user = ensureUserAutoRun(resolvedChatId);
   if (!Array.isArray(user.autoRun.accounts)) user.autoRun.accounts = [];
   // Check duplicate
   if (user.autoRun.accounts.some(a => a.dni === String(dni))) {
@@ -2385,6 +2390,21 @@ app.post("/api/dashboard/accounts/add", panelAuth, (req, res) => {
 // DELETE /api/dashboard/accounts/:chatId/:dni - Remove account
 app.delete("/api/dashboard/accounts/:chatId/:dni", panelAuth, (req, res) => {
   const { chatId, dni } = req.params;
+  
+  // If chatId is 'any', search across all users
+  if (chatId === 'any') {
+    for (const [uid, user] of Object.entries(licenses.users)) {
+      if (!user?.autoRun?.accounts) continue;
+      const before = user.autoRun.accounts.length;
+      user.autoRun.accounts = user.autoRun.accounts.filter(a => a.dni !== dni);
+      if (user.autoRun.accounts.length < before) {
+        saveState();
+        return res.json({ ok: true, message: `Account ${dni} removed from user ${uid}`, remaining: user.autoRun.accounts.length });
+      }
+    }
+    return res.status(404).json({ ok: false, message: "Account not found" });
+  }
+  
   if (!licenses.users[chatId]?.autoRun?.accounts) {
     return res.status(404).json({ ok: false, message: "User not found" });
   }
@@ -2418,18 +2438,29 @@ app.get("/api/dashboard/history", panelAuth, (_req, res) => {
         
         const entry = {
           file,
-          startedAt: startMatch ? startMatch[1] : null,
+          timestamp: startMatch ? startMatch[1] : null,
           finishedAt: endMatch ? endMatch[1] : null,
           exitCode: endMatch ? parseInt(endMatch[2]) : null,
           mode: distributedMatch ? 'distributed' : 'local',
-          successes: summaryMatch ? parseInt(summaryMatch[1]) : null,
-          total: summaryMatch ? parseInt(summaryMatch[2]) : null,
+          successCount: summaryMatch ? parseInt(summaryMatch[1]) : 0,
+          totalCount: summaryMatch ? parseInt(summaryMatch[2]) : 0,
         };
 
-        // Extract per-account details
+        // Extract per-account details and parse into structured objects
         const resumenLines = content.match(/\[RAW_RESUMEN\]\s+[✅❌]\s+.+/g);
         if (resumenLines) {
-          entry.details = resumenLines.map(l => l.replace(/\[RAW_RESUMEN\]\s+/, ''));
+          entry.details = resumenLines.map(l => {
+            const clean = l.replace(/\[RAW_RESUMEN\]\s+/, '');
+            const isSuccess = clean.startsWith('✅');
+            // Parse "✅ Nombre (DNI)" or "❌ Nombre (DNI) - Error msg"
+            const nameMatch = clean.match(/[✅❌]\s+(.+?)\s*\((\d+)\)(?:\s*[-—]\s*(.+))?/);
+            return {
+              nombre: nameMatch ? nameMatch[1].trim() : clean,
+              dni: nameMatch ? nameMatch[2] : '',
+              status: isSuccess ? 'Reservado' : (nameMatch && nameMatch[3] ? nameMatch[3].trim() : 'Error'),
+              success: isSuccess,
+            };
+          });
         }
 
         history.push(entry);
@@ -2515,11 +2546,12 @@ app.get("/api/dashboard/stats", panelAuth, (_req, res) => {
 
 // POST /api/dashboard/execute - Trigger distributed execution
 app.post("/api/dashboard/execute", panelAuth, async (req, res) => {
-  const { chatId } = req.body || {};
-  if (!chatId) {
-    return res.status(400).json({ ok: false, message: "chatId required" });
+  const { chatId: rawChatId } = req.body || {};
+  const resolvedChatId = rawChatId || adminChatId();
+  if (!resolvedChatId) {
+    return res.status(400).json({ ok: false, message: "No chatId provided and no admin configured" });
   }
-  const user = ensureUserAutoRun(chatId);
+  const user = ensureUserAutoRun(resolvedChatId);
   const accounts = user.autoRun?.accounts || [];
   if (accounts.length === 0) {
     return res.status(400).json({ ok: false, message: "No accounts configured for this user" });
@@ -2699,37 +2731,4 @@ startPolling("startup").catch((error) => {
   console.error("Error iniciando polling:", error.message);
   schedulePollingRestart("startup-catch");
 });
-if (!IS_WINDOWS) {
-  console.log("Aviso: comandos de tarea programada de Windows deshabilitados en este sistema.");
-}
 
-startPanelServer(PANEL_PORT);
-
-function killZombies() {
-  for (const job of runningJobs.values()) {
-    try {
-      if (job.process) job.process.kill();
-    } catch (e) {}
-  }
-}
-
-async function gracefulShutdown(signal) {
-  console.log(`Recibido ${signal}, cerrando conexiones...`);
-  killZombies();
-  try {
-    console.log("Deteniendo polling de Telegram...");
-    await bot.stopPolling();
-    console.log("Polling de Telegram detenido correctamente.");
-  } catch (err) {
-    console.error("Error al detener polling:", err.message);
-  }
-  process.exit(0);
-}
-
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-
-startPolling("startup").catch((error) => {
-  console.error("Error iniciando polling:", error.message);
-  schedulePollingRestart("startup-catch");
-});
