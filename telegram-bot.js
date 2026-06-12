@@ -2139,9 +2139,12 @@ bot.on("callback_query", async (query) => {
       if (isHybrid) {
         const useDistributed = DISTRIBUTED_MODE && getWorkerUrls().length > 0;
         
-        let resultRaw;
+        const modeLabel = useDistributed ? '(DISTRIBUIDO)' : '(LOCAL)';
+        await bot.sendMessage(chatId, `⏳ Fase 1 (RAW) ${modeLabel} iniciada. Sondeando API hasta que abra... El resultado se notificará al terminar.`);
+
+        let resultRawPromise;
         if (useDistributed) {
-          resultRaw = await startDistributedBot(chatId, {
+          resultRawPromise = startDistributedBot(chatId, {
             accounts: accountsToRun,
             turboMode: turboModeFlag,
             waveSize: 4,
@@ -2150,21 +2153,22 @@ bot.on("callback_query", async (query) => {
             retryDelayMs: 250,
           });
         } else {
-          resultRaw = startBot(chatId, {
+          resultRawPromise = Promise.resolve(startBot(chatId, {
             accounts: accountsToRun,
             turboMode: turboModeFlag,
             execMode: 'raw',
             maxAttempts: DEFAULTS.maxAttempts,
             retryDelayMs: DEFAULTS.retryDelayMs,
-          });
+          }));
         }
 
-        if (!resultRaw.started) {
-          bot.sendMessage(chatId, `❌ Falló fase cruda: ${resultRaw.reason}`).catch(() => {});
-        } else {
-          const modeLabel = useDistributed ? '(DISTRIBUIDO)' : '(LOCAL)';
-          bot.sendMessage(chatId, `⏳ Fase 1 (RAW) ${modeLabel} iniciada. Sondeando API... Fase 2 visual en 1 min (modo prueba).`).catch(() => {});
-        }
+        resultRawPromise.then(resultRaw => {
+          if (!resultRaw.started && resultRaw.reason) {
+            bot.sendMessage(chatId, `❌ Falló fase cruda: ${resultRaw.reason}`).catch(() => {});
+          }
+        }).catch(err => {
+          bot.sendMessage(chatId, `❌ Error en fase cruda: ${err.message}`).catch(() => {});
+        });
         
         // En modo prueba, reducimos la espera a 1 minuto en lugar de 20 minutos
         setTimeout(() => {
