@@ -290,7 +290,7 @@
         }
 
         DOM.workersGrid.innerHTML = workers.map((w, i) => {
-            const online = w.online || w.status === 'online' || w.healthy === true;
+            const online = w.online || w.status === 'online' || w.status === 'ok' || w.healthy === true;
             const statusClass = online ? 'online' : 'offline';
             const statusText = online ? '🟢 Online' : '🔴 Offline';
             const name = w.name || w.label || `Worker ${i + 1}`;
