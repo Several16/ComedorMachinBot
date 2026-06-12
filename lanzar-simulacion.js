@@ -1,4 +1,4 @@
-const fetch = require('node-fetch');
+// Usando fetch nativo de Node 20
 
 // Extraer las IPs de los workers (leyendo .env o configuraciones si existieran, o usando local si es prueba)
 const workerUrls = [
