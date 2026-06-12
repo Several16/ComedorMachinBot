@@ -486,24 +486,14 @@
                 const dni = this.dataset.dni;
                 const currentGroup = this.dataset.currentGroup || 'Sin Grupo';
                 
-                const result = await Swal.fire({
-                    title: 'Editar Grupo',
-                    input: 'text',
-                    inputValue: currentGroup,
-                    inputPlaceholder: 'Nombre del grupo...',
-                    showCancelButton: true,
-                    confirmButtonText: 'Guardar',
-                    cancelButtonText: 'Cancelar',
-                    background: '#141428',
-                    color: '#e2e8f0'
-                });
+                const newGroup = window.prompt('Editar Grupo:', currentGroup === 'Sin Grupo' ? '' : currentGroup);
 
-                if (result.isConfirmed) {
-                    const newGroup = result.value.trim();
+                if (newGroup !== null) {
+                    const trimmedGroup = newGroup.trim();
                     try {
-                        const { ok, data } = await api('PUT', '/api/dashboard/accounts/group', { chatId, dni, grupo: newGroup });
+                        const { ok, data } = await api('PUT', '/api/dashboard/accounts/group', { chatId, dni, grupo: trimmedGroup });
                         if (ok) {
-                            toast('success', 'Grupo actualizado', `La cuenta ahora está en ${newGroup || 'Sin Grupo'}`);
+                            toast('success', 'Grupo actualizado', `La cuenta ahora está en ${trimmedGroup || 'Sin Grupo'}`);
                             fetchAccounts(); // Refresh
                         } else {
                             toast('error', 'Error', data.message || 'No se pudo actualizar el grupo');
