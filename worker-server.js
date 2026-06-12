@@ -16,6 +16,15 @@
  *   WORKER_ID=worker-1
  */
 
+const path = require("path");
+
+// Cargar .env si existe
+try {
+  require("dotenv").config({ path: path.join(__dirname, ".env") });
+} catch (e) {
+  // dotenv no es obligatorio si las variables están en el entorno
+}
+
 const express = require("express");
 const { executeRawBatch } = require("./charola-engine");
 
