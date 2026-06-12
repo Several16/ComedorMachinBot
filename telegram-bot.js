@@ -1001,9 +1001,14 @@ function setupUserCron(chatId) {
         // Decidir si usar modo distribuido o local
         const useDistributed = DISTRIBUTED_MODE && getWorkerUrls().length > 0;
         
-        let resultRaw;
+        if (telegramBotClient) {
+          const modeLabel = useDistributed ? '(DISTRIBUIDO)' : '(LOCAL)';
+          telegramBotClient.sendMessage(id, `⏳ Fase 1 (RAW) ${modeLabel} iniciada. Sondeando API hasta que abra... El resultado se notificará al terminar.`).catch(() => {});
+        }
+
+        let resultRawPromise;
         if (useDistributed) {
-          resultRaw = await startDistributedBot(id, {
+          resultRawPromise = startDistributedBot(id, {
             accounts: accountsToRun,
             turboMode: turboModeFlag,
             waveSize: 4,
@@ -1012,21 +1017,22 @@ function setupUserCron(chatId) {
             retryDelayMs: 250,
           });
         } else {
-          resultRaw = startBot(id, {
+          resultRawPromise = Promise.resolve(startBot(id, {
             accounts: accountsToRun,
             turboMode: turboModeFlag,
             execMode: 'raw',
             maxAttempts: DEFAULTS.maxAttempts,
             retryDelayMs: DEFAULTS.retryDelayMs,
-          });
+          }));
         }
 
-        if (!resultRaw.started && telegramBotClient) {
-          telegramBotClient.sendMessage(id, `❌ Falló fase cruda: ${resultRaw.reason}`).catch(() => {});
-        } else if (telegramBotClient) {
-          const modeLabel = useDistributed ? '(DISTRIBUIDO)' : '(LOCAL)';
-          telegramBotClient.sendMessage(id, `⏳ Fase 1 (RAW) ${modeLabel} iniciada. Sondeando API hasta que abra... El resultado se notificará al terminar.`).catch(() => {});
-        }
+        resultRawPromise.then(resultRaw => {
+          if (!resultRaw.started && telegramBotClient && resultRaw.reason) {
+            telegramBotClient.sendMessage(id, `❌ Falló fase cruda: ${resultRaw.reason}`).catch(() => {});
+          }
+        }).catch(err => {
+          if (telegramBotClient) telegramBotClient.sendMessage(id, `❌ Error en fase cruda: ${err.message}`).catch(() => {});
+        });
         
         setTimeout(() => {
           if (telegramBotClient) {
