@@ -161,6 +161,20 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
       });
 
       const data = await res.json();
+
+      // CRITICAL: Check if worker returned an error (HTTP 500, etc.)
+      // fetch() does NOT throw on HTTP errors, only on network failures
+      if (!res.ok || data.error) {
+        const errMsg = data.error || `HTTP ${res.status}: ${res.statusText}`;
+        throw new Error(`Worker respondió con error: ${errMsg}`);
+      }
+
+      // Validate response has required fields
+      if (typeof data.successes === 'undefined' || typeof data.total === 'undefined') {
+        log(`[COORD] ⚠️ ${workerName}: Respuesta incompleta: ${JSON.stringify(data).substring(0, 200)}`);
+        throw new Error(`Worker respondió sin campos successes/total: ${JSON.stringify(data).substring(0, 100)}`);
+      }
+
       log(`[COORD] ← ${workerName}: ${data.successes}/${data.total} éxitos (${Math.round(data.durationMs / 1000)}s)`);
 
       if (onProgress) onProgress({ workerId: workerName, ...data });
