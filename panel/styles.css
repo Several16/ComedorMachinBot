@@ -1428,3 +1428,24 @@ h1, h2, h3, h4 {
         font-size: 1.3rem;
     }
 }
+
+/* ── Drag & Drop Table Rows ──────────────────────────────── */
+.drag-handle {
+    cursor: grab;
+    color: var(--text-muted);
+    font-size: 1.2rem;
+    user-select: none;
+}
+.drag-handle:active {
+    cursor: grabbing;
+}
+.data-table tbody tr.draggable {
+    transition: background-color 0.2s, opacity 0.2s;
+}
+.data-table tbody tr.dragging {
+    opacity: 0.5;
+    background-color: var(--surface-light);
+}
+.data-table tbody tr.drag-over {
+    border-top: 2px solid var(--primary);
+}

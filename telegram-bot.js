@@ -2590,6 +2590,8 @@ app.get("/api/dashboard/users", panelAuth, (_req, res) => {
     if (!autoRun) continue;
     users.push({
       chatId,
+      username: user.username || '',
+      firstName: user.firstName || '',
       enabled: autoRun.enabled || false,
       time: autoRun.time || '07:00',
       execMode: autoRun.execMode || 'raw_hybrid',
@@ -2598,6 +2600,46 @@ app.get("/api/dashboard/users", panelAuth, (_req, res) => {
     });
   }
   res.json({ ok: true, users });
+});
+
+// POST /api/dashboard/accounts/reorder - Reorder accounts for a user
+app.post("/api/dashboard/accounts/reorder", panelAuth, (req, res) => {
+  const { chatId, order } = req.body || {};
+  if (!chatId || !Array.isArray(order)) {
+    return res.status(400).json({ ok: false, message: "chatId and order array are required" });
+  }
+  
+  const user = ensureUserAutoRun(chatId);
+  if (!user.autoRun.accounts || user.autoRun.accounts.length === 0) {
+    return res.status(404).json({ ok: false, message: "User has no accounts" });
+  }
+
+  // Create a map of existing accounts by DNI
+  const accountsMap = new Map();
+  user.autoRun.accounts.forEach(acc => {
+    accountsMap.set(acc.dni, acc);
+  });
+
+  // Build the new ordered array
+  const newAccounts = [];
+  
+  // First add accounts in the requested order
+  for (const dni of order) {
+    const strDni = String(dni);
+    if (accountsMap.has(strDni)) {
+      newAccounts.push(accountsMap.get(strDni));
+      accountsMap.delete(strDni);
+    }
+  }
+
+  // Then append any accounts that were missing from the order array
+  for (const acc of accountsMap.values()) {
+    newAccounts.push(acc);
+  }
+
+  user.autoRun.accounts = newAccounts;
+  saveState();
+  res.json({ ok: true, message: "Accounts reordered successfully", total: user.autoRun.accounts.length });
 });
 
 // PUT /api/dashboard/accounts/schedule - Update days for an account

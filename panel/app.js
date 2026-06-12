@@ -66,6 +66,7 @@
         inputCode: $('#inputCode'),
         inputName: $('#inputName'),
         inputGroup: $('#inputGroup'),
+        inputUser: $('#inputUser'),
         bulkImportBtn: $('#bulkImportBtn'),
         bulkImportText: $('#bulkImportText'),
         accountsBody: $('#accountsBody'),
@@ -451,7 +452,8 @@
             }
 
             return `
-                <tr class="fade-in" style="animation-delay: ${i * 0.03}s">
+                <tr class="fade-in draggable" style="animation-delay: ${i * 0.03}s" draggable="true" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}">
+                    <td class="drag-handle" title="Arrastrar para reordenar">☰</td>
                     <td>${escapeHtml(String(dni))}</td>
                     <td>${escapeHtml(String(code))}</td>
                     <td>${escapeHtml(String(name))}</td>
@@ -469,6 +471,112 @@
         DOM.accountsBody.querySelectorAll('.btn-delete-sm').forEach(btn => {
             btn.addEventListener('click', () => deleteAccount(btn.dataset.chatid || 'any', btn.dataset.dni));
         });
+
+        // Attach drag-and-drop handlers
+        attachDragAndDropHandlers();
+    }
+
+    function attachDragAndDropHandlers() {
+        const rows = DOM.accountsBody.querySelectorAll('tr.draggable');
+        let draggedRow = null;
+
+        rows.forEach(row => {
+            row.addEventListener('dragstart', function(e) {
+                draggedRow = this;
+                this.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'move';
+                // Need to set data to make drag work in Firefox
+                e.dataTransfer.setData('text/plain', this.dataset.dni);
+            });
+
+            row.addEventListener('dragend', function() {
+                this.classList.remove('dragging');
+                rows.forEach(r => r.classList.remove('drag-over'));
+                draggedRow = null;
+            });
+
+            row.addEventListener('dragover', function(e) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (this !== draggedRow) {
+                    this.classList.add('drag-over');
+                }
+            });
+
+            row.addEventListener('dragleave', function() {
+                this.classList.remove('drag-over');
+            });
+
+            row.addEventListener('drop', async function(e) {
+                e.preventDefault();
+                this.classList.remove('drag-over');
+                
+                if (this === draggedRow) return;
+
+                // Make sure we are reordering within the same user (chatId)
+                const chatId = draggedRow.dataset.chatid;
+                if (chatId !== this.dataset.chatid) {
+                    toast('warning', 'Aviso', 'Solo puedes reordenar cuentas del mismo usuario');
+                    return;
+                }
+
+                const tbody = DOM.accountsBody;
+                const rowsArray = Array.from(tbody.querySelectorAll('tr.draggable'));
+                const draggedIndex = rowsArray.indexOf(draggedRow);
+                const targetIndex = rowsArray.indexOf(this);
+
+                // Reorder DOM
+                if (draggedIndex < targetIndex) {
+                    this.parentNode.insertBefore(draggedRow, this.nextSibling);
+                } else {
+                    this.parentNode.insertBefore(draggedRow, this);
+                }
+
+                // Extract new order for this user
+                const newOrder = Array.from(tbody.querySelectorAll('tr.draggable'))
+                    .filter(tr => tr.dataset.chatid === chatId)
+                    .map(tr => tr.dataset.dni);
+
+                // Call API
+                try {
+                    const { ok, data } = await api('POST', '/api/dashboard/accounts/reorder', { chatId, order: newOrder });
+                    if (ok) {
+                        toast('success', 'Orden guardado', 'Las cuentas han sido reordenadas');
+                        fetchAccounts(); // Refresh to sync state
+                    } else {
+                        toast('error', 'Error', data.error || data.message || 'No se pudo guardar el orden');
+                        fetchAccounts(); // Revert
+                    }
+                } catch (err) {
+                    toast('error', 'Error de conexión', 'No se pudo guardar el orden');
+                    fetchAccounts(); // Revert
+                }
+            });
+        });
+    }
+
+    async function fetchUsers() {
+        try {
+            const { ok, data } = await api('GET', '/api/dashboard/users');
+            if (ok && data.users) {
+                // Populate user select
+                if (DOM.inputUser) {
+                    DOM.inputUser.innerHTML = '<option value="" disabled selected>Seleccione un usuario...</option>';
+                    data.users.forEach(u => {
+                        const name = u.firstName || u.username || 'Usuario Anónimo';
+                        const option = document.createElement('option');
+                        option.value = u.chatId;
+                        option.textContent = `${name} (${u.chatId}) - ${u.accountCount} cuentas`;
+                        DOM.inputUser.appendChild(option);
+                    });
+                    if (data.users.length > 0) {
+                        DOM.inputUser.selectedIndex = 1; // Default to first user
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('Error fetching users:', e);
+        }
     }
 
     async function addAccount(e) {
@@ -477,6 +585,7 @@
         const codigo = DOM.inputCode.value.trim();
         const nombre = DOM.inputName.value.trim();
         const grupo = DOM.inputGroup ? DOM.inputGroup.value.trim() : '';
+        const chatId = DOM.inputUser ? DOM.inputUser.value : '';
 
         if (!dni || !codigo || !nombre) {
             toast('warning', 'Campos incompletos', 'Todos los campos obligatorios deben llenarse');
@@ -484,7 +593,7 @@
         }
 
         try {
-            const { ok, data } = await api('POST', '/api/dashboard/accounts/add', { dni, codigo, nombre, grupo });
+            const { ok, data } = await api('POST', '/api/dashboard/accounts/add', { chatId, dni, codigo, nombre, grupo });
             if (ok) {
                 toast('success', 'Cuenta agregada', `${nombre} (${dni})`);
                 DOM.addAccountForm.reset();
@@ -766,6 +875,7 @@
             fetchAccounts(),
             fetchHistory(),
             fetchSchedule(),
+            fetchUsers(),
         ]);
 
         startTimers();
