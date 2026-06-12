@@ -2168,11 +2168,9 @@ bot.on("callback_query", async (query) => {
           }
         }).catch(err => {
           bot.sendMessage(chatId, `❌ Error en fase cruda: ${err.message}`).catch(() => {});
-        });
-        
-        // En modo prueba, reducimos la espera a 1 minuto en lugar de 20 minutos
-        setTimeout(() => {
-          bot.sendMessage(chatId, "📸 Iniciando Fase 2 (Visual) de la prueba...").catch(() => {});
+        }).finally(() => {
+          // Fase 2 arranca estrictamente después de que termina la Fase 1
+          bot.sendMessage(chatId, "📸 Fase 1 completada. Iniciando Fase 2 (Visual) de la prueba...").catch(() => {});
           startBot(chatId, {
             accounts: accountsToRun,
             turboMode: turboModeFlag,
@@ -2180,7 +2178,7 @@ bot.on("callback_query", async (query) => {
             maxAttempts: DEFAULTS.maxAttempts,
             retryDelayMs: DEFAULTS.retryDelayMs,
           });
-        }, 1 * 60 * 1000); 
+        }); 
       } else {
         const result = startBot(chatId, {
           accounts: accountsToRun,
