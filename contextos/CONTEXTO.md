@@ -36,9 +36,11 @@ Bot de Telegram que automatiza la reserva de cupos de comedor en la Universidad 
 - **Fix**: Se actualizó `panel/app.js` para aceptar `"ok"` como válido.
 
 ### 3. Falta de control sobre el orden y asignación de cuentas
-- **Bug**: Al agregar cuentas desde el panel, todas iban al Admin principal y el orden era de inserción.
-- **Fix**: Se agregó un selector de usuario y la funcionalidad Drag & Drop en el panel web para reordenar cuentas y decidir las "sondas".
-
+- **Bug**: Al agregar cuentas desde el panel, todas iban al Admin principal y el orden era de inserción. "Sin Grupo" no se podía editar fácilmente.
+- **Fix**: Se agregó un selector de usuario en la creación.
+- **Fix (Orden Numérico)**: Se cambió el sistema de reordenamiento a un **input numérico** explícito en cada fila. Al cambiar el número (ej. "1") y dar Enter, la cuenta salta a ser la Sonda Principal y empuja a las demás hacia abajo.
+- **Fix (Grupos Popover)**: Se implementó un menú contextual (popover con `datalist`) nativo y elegante que aparece al hacer clic sobre la etiqueta "Sin Grupo", permitiendo asignar grupos existentes con un solo clic o crear nuevos.
+- **Calendario Verificado**: Se comprobó que el bot lee exitosamente el array de días (`['lun', 'mar', ...]`) en `telegram-bot.js` usando `America/Lima` para omitir cuentas desmarcadas.
 ## ⚙️ Parámetros actuales
 
 ### Coordinador
