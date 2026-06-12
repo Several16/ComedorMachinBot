@@ -8,7 +8,8 @@
  * Exporta: warmUpWaitForApiOpen, processAccountRawPost, processAccountRawRescue, executeRawBatch
  */
 
-const API_URL = "https://comensales.uncp.edu.pe/api/registros";
+const API_URL = process.env.UNCP_API_URL || "https://comensales.uncp.edu.pe/api/registros";
+const WEB_URL = process.env.UNCP_WEB_URL || "https://comedor.uncp.edu.pe/charola";
 
 // ── Helpers ──
 function sleep(ms) {
