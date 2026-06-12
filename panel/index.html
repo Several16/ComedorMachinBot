@@ -42,6 +42,25 @@
         </div>
     </div>
 
+    <!-- Edit Group Modal -->
+    <div id="editGroupModal" class="modal-overlay hidden">
+        <div class="modal-card glass-card">
+            <div class="modal-icon">🏷️</div>
+            <h3>Editar Grupo</h3>
+            <p class="text-muted">Selecciona o escribe el grupo.</p>
+            <div class="form-group" style="margin-top: 15px;">
+                <input type="text" id="editGroupInput" class="form-input" list="existingGroupsList" placeholder="Nombre del grupo..." autocomplete="off">
+                <datalist id="existingGroupsList">
+                    <!-- Populated by JS -->
+                </datalist>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="editGroupCancel">Cancelar</button>
+                <button class="btn btn-primary" id="editGroupConfirm">Guardar</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div id="toastContainer" class="toast-container"></div>
 

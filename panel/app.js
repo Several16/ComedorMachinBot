@@ -84,6 +84,12 @@
         nextExecution: $('#nextExecution'),
         healthCheckBtn: $('#healthCheckBtn'),
         systemUptime: $('#systemUptime'),
+        // Group Modal
+        editGroupModal: $('#editGroupModal'),
+        editGroupInput: $('#editGroupInput'),
+        existingGroupsList: $('#existingGroupsList'),
+        editGroupCancel: $('#editGroupCancel'),
+        editGroupConfirm: $('#editGroupConfirm'),
     };
 
     // ── API Helper ─────────────────────────────────────────────
@@ -236,6 +242,37 @@
 
             DOM.modalCancel.addEventListener('click', onCancel);
             DOM.modalConfirm.addEventListener('click', onConfirm);
+        });
+    }
+
+    // ── Edit Group Modal ───────────────────────────────────────
+    function promptEditGroup(currentGroup, allGroups) {
+        return new Promise((resolve) => {
+            // Populate datalist
+            DOM.existingGroupsList.innerHTML = allGroups.map(g => `<option value="${escapeHtml(g)}">`).join('');
+            
+            // Set initial value
+            DOM.editGroupInput.value = currentGroup === 'Sin Grupo' ? '' : currentGroup;
+            DOM.editGroupModal.classList.remove('hidden');
+            DOM.editGroupInput.focus();
+
+            function cleanup() {
+                DOM.editGroupModal.classList.add('hidden');
+                DOM.editGroupCancel.removeEventListener('click', onCancel);
+                DOM.editGroupConfirm.removeEventListener('click', onConfirm);
+            }
+
+            function onCancel() { cleanup(); resolve(null); }
+            function onConfirm() { cleanup(); resolve(DOM.editGroupInput.value); }
+
+            DOM.editGroupCancel.addEventListener('click', onCancel);
+            DOM.editGroupConfirm.addEventListener('click', onConfirm);
+            
+            // Allow Enter key to confirm
+            DOM.editGroupInput.onkeyup = (e) => {
+                if (e.key === 'Enter') onConfirm();
+                if (e.key === 'Escape') onCancel();
+            };
         });
     }
 
@@ -486,7 +523,11 @@
                 const dni = this.dataset.dni;
                 const currentGroup = this.dataset.currentGroup || 'Sin Grupo';
                 
-                const newGroup = window.prompt('Editar Grupo:', currentGroup === 'Sin Grupo' ? '' : currentGroup);
+                // Get all existing unique groups
+                const allAccounts = state.accounts || [];
+                const allGroups = [...new Set(allAccounts.map(a => a.grupo).filter(g => g && g !== 'Sin Grupo'))].sort();
+                
+                const newGroup = await promptEditGroup(currentGroup, allGroups);
 
                 if (newGroup !== null) {
                     const trimmedGroup = newGroup.trim();
