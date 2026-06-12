@@ -452,12 +452,14 @@
             }
 
             return `
-                <tr class="fade-in draggable" style="animation-delay: ${i * 0.03}s" draggable="true" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}">
-                    <td class="drag-handle" title="Arrastrar para reordenar">☰</td>
+                <tr class="fade-in" style="animation-delay: ${i * 0.03}s" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}">
+                    <td>
+                        <input type="number" class="form-input order-input" value="${i + 1}" min="1" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" data-current-index="${i}" style="width: 50px; text-align: center; padding: 0.2rem; height: auto;">
+                    </td>
                     <td>${escapeHtml(String(dni))}</td>
                     <td>${escapeHtml(String(code))}</td>
                     <td>${escapeHtml(String(name))}</td>
-                    <td><span class="badge badge-neutral">${escapeHtml(String(grupo))}</span></td>
+                    <td><span class="badge badge-neutral clickable-group" style="cursor: pointer;" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" data-current-group="${escapeHtml(String(grupo))}" title="Clic para cambiar grupo">${escapeHtml(String(grupo))}</span></td>
                     <td>${badgeHtml}</td>
                     <td>
                         <button class="btn-delete-sm" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" title="Eliminar cuenta">
@@ -472,74 +474,73 @@
             btn.addEventListener('click', () => deleteAccount(btn.dataset.chatid || 'any', btn.dataset.dni));
         });
 
-        // Attach drag-and-drop handlers
-        attachDragAndDropHandlers();
+        // Attach interactive handlers (Order and Group)
+        attachInteractiveHandlers();
     }
 
-    function attachDragAndDropHandlers() {
-        const rows = DOM.accountsBody.querySelectorAll('tr.draggable');
-        let draggedRow = null;
+    function attachInteractiveHandlers() {
+        // Handle Group Editing
+        DOM.accountsBody.querySelectorAll('.clickable-group').forEach(badge => {
+            badge.addEventListener('click', async function() {
+                const chatId = this.dataset.chatid;
+                const dni = this.dataset.dni;
+                const currentGroup = this.dataset.currentGroup || 'Sin Grupo';
+                
+                const result = await Swal.fire({
+                    title: 'Editar Grupo',
+                    input: 'text',
+                    inputValue: currentGroup,
+                    inputPlaceholder: 'Nombre del grupo...',
+                    showCancelButton: true,
+                    confirmButtonText: 'Guardar',
+                    cancelButtonText: 'Cancelar',
+                    background: '#141428',
+                    color: '#e2e8f0'
+                });
 
-        rows.forEach(row => {
-            row.addEventListener('dragstart', function(e) {
-                draggedRow = this;
-                this.classList.add('dragging');
-                e.dataTransfer.effectAllowed = 'move';
-                // Need to set data to make drag work in Firefox
-                e.dataTransfer.setData('text/plain', this.dataset.dni);
-            });
-
-            row.addEventListener('dragend', function() {
-                this.classList.remove('dragging');
-                rows.forEach(r => r.classList.remove('drag-over'));
-                draggedRow = null;
-            });
-
-            row.addEventListener('dragover', function(e) {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = 'move';
-                if (this !== draggedRow) {
-                    this.classList.add('drag-over');
+                if (result.isConfirmed) {
+                    const newGroup = result.value.trim();
+                    try {
+                        const { ok, data } = await api('PUT', '/api/dashboard/accounts/group', { chatId, dni, grupo: newGroup });
+                        if (ok) {
+                            toast('success', 'Grupo actualizado', `La cuenta ahora está en ${newGroup || 'Sin Grupo'}`);
+                            fetchAccounts(); // Refresh
+                        } else {
+                            toast('error', 'Error', data.message || 'No se pudo actualizar el grupo');
+                        }
+                    } catch (err) {
+                        toast('error', 'Error de conexión', 'No se pudo actualizar el grupo');
+                    }
                 }
             });
+        });
 
-            row.addEventListener('dragleave', function() {
-                this.classList.remove('drag-over');
-            });
-
-            row.addEventListener('drop', async function(e) {
-                e.preventDefault();
-                this.classList.remove('drag-over');
+        // Handle Numeric Reordering
+        DOM.accountsBody.querySelectorAll('.order-input').forEach(input => {
+            const handleOrderChange = async function() {
+                const chatId = this.dataset.chatid;
+                const currentIdx = parseInt(this.dataset.currentIndex, 10);
+                const targetIdx = parseInt(this.value, 10) - 1; // Convert 1-based to 0-based
                 
-                if (this === draggedRow) return;
-
-                // Make sure we are reordering within the same user (chatId)
-                const chatId = draggedRow.dataset.chatid;
-                if (chatId !== this.dataset.chatid) {
-                    toast('warning', 'Aviso', 'Solo puedes reordenar cuentas del mismo usuario');
+                // Get all rows for this user
+                const userRows = Array.from(DOM.accountsBody.querySelectorAll('.order-input'))
+                                      .filter(inp => inp.dataset.chatid === chatId);
+                
+                if (targetIdx === currentIdx || targetIdx < 0 || targetIdx >= userRows.length) {
+                    this.value = currentIdx + 1; // Revert to old value if invalid
                     return;
                 }
 
-                const tbody = DOM.accountsBody;
-                const rowsArray = Array.from(tbody.querySelectorAll('tr.draggable'));
-                const draggedIndex = rowsArray.indexOf(draggedRow);
-                const targetIndex = rowsArray.indexOf(this);
+                // Get current order of DNIS
+                let order = userRows.map(inp => inp.dataset.dni);
+                
+                // Remove the item from current position
+                const [movedDni] = order.splice(currentIdx, 1);
+                // Insert at new position
+                order.splice(targetIdx, 0, movedDni);
 
-                // Reorder DOM
-                if (draggedIndex < targetIndex) {
-                    this.parentNode.insertBefore(draggedRow, this.nextSibling);
-                } else {
-                    this.parentNode.insertBefore(draggedRow, this);
-                }
-
-                // Extract new order for this user
-                const newOrder = Array.from(tbody.querySelectorAll('tr.draggable'))
-                    .filter(tr => tr.dataset.chatid === chatId)
-                    .map(tr => tr.dataset.dni);
-
-                // Call API
                 try {
-                    const { ok, data } = await api('POST', '/api/dashboard/accounts/reorder', { chatId, order: newOrder });
+                    const { ok, data } = await api('POST', '/api/dashboard/accounts/reorder', { chatId, order });
                     if (ok) {
                         toast('success', 'Orden guardado', 'Las cuentas han sido reordenadas');
                         fetchAccounts(); // Refresh to sync state
@@ -551,6 +552,11 @@
                     toast('error', 'Error de conexión', 'No se pudo guardar el orden');
                     fetchAccounts(); // Revert
                 }
+            };
+
+            input.addEventListener('change', handleOrderChange);
+            input.addEventListener('keyup', (e) => {
+                if (e.key === 'Enter') handleOrderChange.call(input);
             });
         });
     }

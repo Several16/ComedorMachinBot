@@ -2642,6 +2642,26 @@ app.post("/api/dashboard/accounts/reorder", panelAuth, (req, res) => {
   res.json({ ok: true, message: "Accounts reordered successfully", total: user.autoRun.accounts.length });
 });
 
+// PUT /api/dashboard/accounts/group - Update group for an account
+app.put("/api/dashboard/accounts/group", panelAuth, (req, res) => {
+  const { chatId, dni, grupo } = req.body || {};
+  if (!chatId || !dni) {
+    return res.status(400).json({ ok: false, message: "chatId and dni are required" });
+  }
+  
+  if (!licenses.users[chatId]?.autoRun?.accounts) {
+    return res.status(404).json({ ok: false, message: "User not found" });
+  }
+  const account = licenses.users[chatId].autoRun.accounts.find(a => a.dni === String(dni));
+  if (!account) {
+    return res.status(404).json({ ok: false, message: "Account not found" });
+  }
+  
+  account.grupo = String(grupo || 'Sin Grupo').trim();
+  saveState();
+  res.json({ ok: true, message: "Group updated successfully", grupo: account.grupo });
+});
+
 // PUT /api/dashboard/accounts/schedule - Update days for an account
 app.put("/api/dashboard/accounts/schedule", panelAuth, (req, res) => {
   const { chatId, dni, dias } = req.body || {};

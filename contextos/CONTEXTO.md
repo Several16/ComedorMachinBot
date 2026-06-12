@@ -11,132 +11,45 @@ Bot de Telegram que automatiza la reserva de cupos de comedor en la Universidad 
 - **`settings.json`** — Estado persistente (cuentas, configuración, horarios).
 
 ### Flujo de ejecución (Modo Híbrido — el único activo)
-1. **Fase 1 - RAW** (6:57 AM Lima): Ataque directo a la API `https://comensales.uncp.edu.pe/api/registros`
-   - Warm-up: sondea con 1 cuenta hasta que la API responda (7:00 AM)
-   - Ataque: lanza TODAS las cuentas con 30ms de desfase entre cada una
-   - Reintentos: 50 intentos × 100ms = 5 segundos (toda la ventana de cupos)
-   - Rescate: si alguna falla, pausa 3s + 15 intentos × 500ms
-2. **Fase 2 - VISUAL** (20 min después): Abre Playwright para capturar QR/screenshots de los tickets obtenidos
+### Arquitectura Distribuida (Nueva)
+- **1 Servidor Principal (Coordinador)**: Ejecuta `telegram-bot.js`, hostea el Dashboard Web, el Cron Job a las 06:57 y distribuye la carga.
+- **4 Workers**: Instancias VPS que ejecutan `worker-server.js` (Puerto 4000) y reciben peticiones del coordinador para ejecutar `charola-engine.js` (Fase 1).
+- **Fase 1 (RAW Distribuida)**: El coordinador envía N/4 cuentas a cada worker en paralelo. Los workers ejecutan el Warm-up, esperan a que la API abra, atacan y reportan el resultado.
+- **Fase 2 (Visual Local)**: Se ejecuta 20 minutos después en el servidor principal usando Playwright para capturar los tickets.
 
-### API de la universidad
-- **Endpoint**: `POST https://comensales.uncp.edu.pe/api/registros`
-- **Body**: FormData con `dni` y `codigo`
-- **Respuestas**:
-  - `code: 200/201` → Éxito, cupo asegurado
-  - `code: 300` → API cerrada (aún no son las 7 AM)
-  - `code: 404` → No encontrado / servicio cerrado
-  - `code: 500` → Error interno del servidor (deadlock de BD)
-  - `message: "YA UTILIZADO"` → Ya tiene ticket (se cuenta como éxito)
-  - `message` con "AGOTADOS" o "SIN CUPOS" → Cupos terminados
+### Dashboard Web (Gestión)
+- Se accede a través de la web con una `PANEL_KEY` estática.
+- Permite ver el estado de los workers, estadísticas en tiempo real y el historial.
+- Permite **agregar cuentas** con selección del usuario (Admin 1 o Admin 2).
+- Permite **reordenar cuentas (Drag & Drop)**. El orden visual determina qué cuenta será la "Cuenta Sonda" (las primeras 4 cuentas de la lista actúan como sondas para detectar la apertura de la API).
 
-### Ventana de cupos
-- **Los cupos duran 4-5 segundos** después de las 7:00 AM Lima
-- Todo reintento después de ese periodo es inútil
-- Por eso los parámetros están optimizados para concentrar intentos en esos 5 segundos
+## 🐛 Problemas resueltos (Junio 2026)
 
-## 👤 Usuario
-- Maneja actualmente **12 cuentas**, planea escalar a **40 cuentas**
-- Chat IDs en el bot: `1318767547` y `7586581687`
-- Las cuentas tienen: DNI, Código, y Nombre (etiqueta)
+### 1. Fallo de autenticación en Workers (2026-06-11)
+- **Bug**: Los workers devolvían siempre HTTP 401 Unauthorized a pesar de tener el `.env`.
+- **Razón**: `worker-server.js` no estaba requiriendo `dotenv/config`, por lo que `process.env.WORKER_API_KEY` era `undefined`.
+- **Fix**: Se agregó `require("dotenv").config()` al inicio de `worker-server.js`.
 
-## 🐛 Problemas resueltos
+### 2. Dashboard mostraba Workers como Offline (2026-06-11)
+- **Bug**: El dashboard web mostraba los workers en rojo "Offline" pero con el Uptime correcto.
+- **Razón**: El endpoint `/health` de los workers respondía con `status: "ok"`, pero el frontend esperaba estrictamente `status: "online"`.
+- **Fix**: Se actualizó `panel/app.js` para aceptar `"ok"` como válido.
 
-### 1. Cuenta con typo (2026-05-31)
-- DNI `74526655` tenía código mal digitado → siempre fallaba
-- Se corrigió el código y empezó a funcionar
+### 3. Falta de control sobre el orden y asignación de cuentas
+- **Bug**: Al agregar cuentas desde el panel, todas iban al Admin principal y el orden era de inserción.
+- **Fix**: Se agregó un selector de usuario y la funcionalidad Drag & Drop en el panel web para reordenar cuentas y decidir las "sondas".
 
-### 2. Mode Playwright accidental (2026-06-03)
-- El bot corrió en modo VISUAL puro en vez de Híbrido
-- Procesaba cuentas de 5 en 5 con Playwright → muy lento
-- Una cuenta quedó 3+ horas en loop reintentando "sin cupos"
-- **Fix**: Eliminar opción de modo Playwright, forzar siempre Híbrido
+## ⚙️ Parámetros actuales
 
-### 3. Límite inteligente en Fase Visual (2026-06-03)
-- Si recibe "sin cupos" 30 veces consecutivas → para automáticamente
-- Evita loops de 3 horas cuando los cupos ya se agotaron
-
-### 4. Deadlock de BD — code 500 (2026-06-03)
-- Al enviar 12 cuentas simultáneas, una al azar recibía `code: 500` sin mensaje
-- El servidor creaba un deadlock que persistía por minutos
-- La cuenta fallida reintentaba 230 veces (150 + 80 rescate) sin éxito
-- **Fix aplicado**:
-  - `code: 500` explícitamente retryable (además del check `!msg`)
-  - Stagger reducido a 30ms (40 cuentas en 1.2s, cabe en ventana de 5s)
-  - Reintentos: 50 × 100ms = 5s (concentrados en la ventana)
-  - Rescate: 3s pausa + 15 × 500ms (rápido)
-- **Estado**: PENDIENTE DE PRUEBA (primera prueba: 2026-06-04)
-
-## ⚙️ Parámetros actuales (charola-auto.js)
-
-### Fase 1 — RAW
-| Parámetro | Valor | Razón |
-|-----------|-------|-------|
-| `STAGGER_DELAY_MS` | 30ms | 40 cuentas en 1.2s, dentro de ventana 5s |
-| `maxPostAttempts` | 50 | 50 × 100ms = 5s de reintentos |
-| `retryDelayPostMs` | 100ms | Máxima velocidad en la ventana |
-
-### Rescate
-| Parámetro | Valor | Razón |
-|-----------|-------|-------|
-| Pausa pre-rescate | 3000ms | Dar tiempo mínimo a la BD |
-| `maxRescueAttempts` | 15 | 15 × 500ms = 7.5s |
-| `rescueDelayMs` | 500ms | Rápido, cupos aún podrían existir |
-
-### Fase 2 — Visual
-| Parámetro | Valor | Razón |
-|-----------|-------|-------|
-| `MAX_CONSECUTIVE_NO_CUPOS` | 30 | Límite inteligente: 30 "sin cupos" seguidos = parar |
-| `maxAttempts` | 1200 | (pero parado por límite inteligente si aplica) |
-| Batch size | 5 | Cuentas procesadas en paralelo por lote |
-
-## 🔧 VPS — Comandos útiles
-
-### Desplegar cambios
-```bash
-cd /root/ComedorMachinBot && git pull && pm2 restart charola-tg
-```
-
-### Ver estado
-```bash
-pm2 status
-pm2 logs charola-tg --lines 30
-```
-
-### Ver log de Fase 1 (RAW) del día
-```bash
-cat /root/ComedorMachinBot/logs/$(ls -t /root/ComedorMachinBot/logs/ | grep T11-57 | head -1)
-```
-
-### Ver log de Fase 2 (Visual) del día
-```bash
-cat /root/ComedorMachinBot/logs/$(ls -t /root/ComedorMachinBot/logs/ | grep T12-17 | head -1)
-```
-
-### Ver logs más recientes
-```bash
-ls -lt /root/ComedorMachinBot/logs/ | head -10
-```
+### Coordinador
+- **Workers**: 4 (`134.209.34.113`, `157.230.189.111`, `165.232.59.167`, `143.198.111.123`)
+- **Timeout y AbortSignal**: Manejado correctamente si un worker se cae, con fallback de ejecución local.
 
 ## 📋 Plan de escalado
-1. ✅ Probar con 12 cuentas (2026-06-04)
-2. ⬜ Si 12/12 funciona → subir a 20
-3. ⬜ Si 20/20 funciona → subir a 30-40
-4. ⬜ Si con 40 falla → implementar "dos oleadas" (mitad y mitad separadas por 2s)
-5. ⬜ Si aún falla → considerar múltiples VPS con diferentes IPs
-
-## 📊 Logs — Qué buscar
-- `[RAW_SUCCESS]` → Cuenta aseguró cupo en Fase 1
-- `[RAW_FAIL]` → Cuenta falló (ver razón: code=500, rescate agotado, etc.)
-- `[RAW_RESUMEN]` → Resumen final con ✅ y ❌
-- `[BATCH_SUCCESS]` → Cuenta capturó QR en Fase 2
-- `[BATCH_SMART_STOP]` → Fase 2 paró por límite inteligente (sin cupos)
-- `[WARMUP]` → Sondeo pre-apertura
-
-## 🚫 Cosas eliminadas
-- **Modo Playwright puro**: Ya no se puede seleccionar. Siempre es Híbrido.
-- **Botón de estrategia**: Removido del menú de Telegram.
+1. ✅ Arquitectura distribuida configurada (1 Coordinador + 4 Workers).
+2. ✅ Manejo de 21 cuentas exitoso.
+3. ⬜ Próximo objetivo de usuario: Escalar a **60 cuentas** para atrapar los 300 cupos en los 5 segundos de ventana. Con 4 workers, equivale a 15 cuentas por worker (una sonda + 3.5 oleadas de ataque). Debería completarse en ~2 segundos.
 
 ## 💡 Ideas pendientes (no implementadas)
-- **App web/dashboard** para gestionar cuentas (el usuario lo mencionó como idea)
-- **Múltiples VPS** con diferentes IPs ($6/mes cada uno, 1GB RAM suficiente para RAW)
-- **Proxies rotativos** para simular diferentes IPs desde un solo VPS
+- Dashboard responsivo para móviles (actualmente mejor en escritorio).
+- Filtros avanzados y paginación en el lado del servidor para las cuentas si pasan de 100.
