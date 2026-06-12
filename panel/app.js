@@ -84,12 +84,11 @@
         nextExecution: $('#nextExecution'),
         healthCheckBtn: $('#healthCheckBtn'),
         systemUptime: $('#systemUptime'),
-        // Group Modal
-        editGroupModal: $('#editGroupModal'),
-        editGroupInput: $('#editGroupInput'),
-        existingGroupsList: $('#existingGroupsList'),
-        editGroupCancel: $('#editGroupCancel'),
-        editGroupConfirm: $('#editGroupConfirm'),
+        // Group Popover
+        groupPopover: $('#groupPopover'),
+        popoverGroupList: $('#popoverGroupList'),
+        popoverNewGroup: $('#popoverNewGroup'),
+        popoverSaveBtn: $('#popoverSaveBtn'),
     };
 
     // ── API Helper ─────────────────────────────────────────────
@@ -246,35 +245,68 @@
     }
 
     // ── Edit Group Modal ───────────────────────────────────────
-    function promptEditGroup(currentGroup, allGroups) {
+    // ── Group Popover ──────────────────────────────────────────
+    let activePopoverResolve = null;
+
+    function openGroupPopover(targetEl, currentGroup, allGroups) {
         return new Promise((resolve) => {
-            // Populate datalist
-            DOM.existingGroupsList.innerHTML = allGroups.map(g => `<option value="${escapeHtml(g)}">`).join('');
-            
-            // Set initial value
-            DOM.editGroupInput.value = currentGroup === 'Sin Grupo' ? '' : currentGroup;
-            DOM.editGroupModal.classList.remove('hidden');
-            DOM.editGroupInput.focus();
-
-            function cleanup() {
-                DOM.editGroupModal.classList.add('hidden');
-                DOM.editGroupCancel.removeEventListener('click', onCancel);
-                DOM.editGroupConfirm.removeEventListener('click', onConfirm);
+            if (activePopoverResolve) {
+                activePopoverResolve(null);
+                closeGroupPopover();
             }
+            activePopoverResolve = resolve;
 
-            function onCancel() { cleanup(); resolve(null); }
-            function onConfirm() { cleanup(); resolve(DOM.editGroupInput.value); }
+            // Position popover
+            const rect = targetEl.getBoundingClientRect();
+            DOM.groupPopover.style.top = `${rect.bottom + window.scrollY + 8}px`;
+            DOM.groupPopover.style.left = `${rect.left + window.scrollX}px`;
 
-            DOM.editGroupCancel.addEventListener('click', onCancel);
-            DOM.editGroupConfirm.addEventListener('click', onConfirm);
-            
-            // Allow Enter key to confirm
-            DOM.editGroupInput.onkeyup = (e) => {
-                if (e.key === 'Enter') onConfirm();
-                if (e.key === 'Escape') onCancel();
+            // Populate list
+            DOM.popoverGroupList.innerHTML = allGroups.map(g => `
+                <div class="popover-item" data-group="${escapeHtml(g)}">${escapeHtml(g)}</div>
+            `).join('');
+
+            // Click on existing group
+            DOM.popoverGroupList.querySelectorAll('.popover-item').forEach(item => {
+                item.onclick = () => {
+                    resolve(item.dataset.group);
+                    closeGroupPopover();
+                };
+            });
+
+            DOM.popoverNewGroup.value = currentGroup === 'Sin Grupo' ? '' : currentGroup;
+            DOM.groupPopover.classList.remove('hidden');
+            DOM.popoverNewGroup.focus();
+
+            DOM.popoverSaveBtn.onclick = () => {
+                resolve(DOM.popoverNewGroup.value);
+                closeGroupPopover();
+            };
+
+            DOM.popoverNewGroup.onkeyup = (e) => {
+                if (e.key === 'Enter') DOM.popoverSaveBtn.click();
+                if (e.key === 'Escape') {
+                    resolve(null);
+                    closeGroupPopover();
+                }
             };
         });
     }
+
+    function closeGroupPopover() {
+        DOM.groupPopover.classList.add('hidden');
+        activePopoverResolve = null;
+    }
+
+    // Close popover when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!DOM.groupPopover.classList.contains('hidden')) {
+            if (!DOM.groupPopover.contains(e.target) && !e.target.classList.contains('clickable-group')) {
+                if (activePopoverResolve) activePopoverResolve(null);
+                closeGroupPopover();
+            }
+        }
+    });
 
     // ── Animated Counter ───────────────────────────────────────
     function animateCounter(el, targetValue, suffix = '') {
@@ -527,7 +559,7 @@
                 const allAccounts = state.accounts || [];
                 const allGroups = [...new Set(allAccounts.map(a => a.grupo).filter(g => g && g !== 'Sin Grupo'))].sort();
                 
-                const newGroup = await promptEditGroup(currentGroup, allGroups);
+                const newGroup = await openGroupPopover(this, currentGroup, allGroups);
 
                 if (newGroup !== null) {
                     const trimmedGroup = newGroup.trim();

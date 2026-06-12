@@ -1449,3 +1449,69 @@ h1, h2, h3, h4 {
 .data-table tbody tr.drag-over {
     border-top: 2px solid var(--primary);
 }
+
+/* ── Popover ────────────────────────────────────────────────── */
+.popover {
+    position: absolute;
+    z-index: 1000;
+    width: 220px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transform-origin: top left;
+    animation: scaleIn 0.2s ease-out forwards;
+}
+
+.popover-header {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    letter-spacing: 0.05em;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.popover-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.popover-item {
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    transition: background 0.15s;
+}
+
+.popover-item:hover {
+    background: var(--accent-purple-dim);
+}
+
+.popover-footer {
+    display: flex;
+    gap: 6px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.popover-footer input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px;
+    font-size: 0.85rem;
+}
+
+.popover-footer button {
+    padding: 4px 10px;
+}
+
+@keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+}
