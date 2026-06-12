@@ -25,9 +25,9 @@ cat > .env <<EOF
 WORKER_PORT=4001
 # Usamos el mismo API Key
 WORKER_API_KEY=dev-key
-# Apuntar las URLs a nuestro Simulador falso (Puerto 5000)
-UNCP_API_URL="http://$IP_COORDINADOR:5000/api/registros"
-UNCP_WEB_URL="http://$IP_COORDINADOR:5000/charola"
+# Apuntar las URLs a nuestro Simulador falso usando localhost para saltar el firewall
+UNCP_API_URL="http://127.0.0.1:5000/api/registros"
+UNCP_WEB_URL="http://127.0.0.1:5000/charola"
 EOF
 
 # Para que el script reconozca la API KEY actual si existe:
