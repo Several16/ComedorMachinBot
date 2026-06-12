@@ -1,9 +1,11 @@
-// Usando fetch nativo de Node 20
+require('dotenv').config();
 
 // Extraer las IPs de los workers (leyendo .env o configuraciones si existieran, o usando local si es prueba)
 const workerUrls = [
     "http://127.0.0.1:4001", // Aquí se deberían poner las IPs de los 4 workers. Por ahora probamos local.
 ];
+
+const API_KEY = process.env.WORKER_API_KEY || "dev-key";
 
 const mockAccounts = [
     { dni: "73968815", codigo: "2023200615D", nombre: "Prueba 1" },
@@ -15,6 +17,7 @@ const mockAccounts = [
 async function lanzarSimulacion() {
     console.log("=================================================");
     console.log("🚀 LANZANDO ATAQUE AL UNIVERSO PARALELO (SIMULADOR)");
+    console.log(`🔑 Usando API KEY: ${API_KEY.substring(0, 5)}...`);
     console.log("=================================================");
     
     for (const workerUrl of workerUrls) {
@@ -24,7 +27,7 @@ async function lanzarSimulacion() {
                 method: "POST",
                 headers: { 
                     "Content-Type": "application/json",
-                    "Authorization": "Bearer dev-key" // Asumimos dev-key para la simulación
+                    "Authorization": `Bearer ${API_KEY}`
                 },
                 body: JSON.stringify({
                     jobId: "SIMULACION-" + Date.now(),
