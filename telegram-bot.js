@@ -609,6 +609,27 @@ async function startDistributedBot(chatId, config) {
   runningJobs.set(jobId, distributedJob);
   startLoadingIndicator(ownerChatId);
 
+  const uncpApiUrl = process.env.UNCP_API_URL || "https://comensales.uncp.edu.pe/api/registros";
+  let apiOpened = false;
+  let firstSuccessSent = false;
+
+  const probeInterval = setInterval(async () => {
+    if (apiOpened) return clearInterval(probeInterval);
+    try {
+      const res = await fetch(uncpApiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ Tipo_Documento: "1", Numero_Documento: "00000000", Codigo: "PROBE" })
+      });
+      const data = await res.json();
+      if (data.code !== 300) {
+        apiOpened = true;
+        clearInterval(probeInterval);
+        if (telegramBotClient) telegramBotClient.sendMessage(ownerChatId, `🟢 ¡La universidad acaba de ABRIR la puerta! Lanzando el ataque masivo...`).catch(()=>{});
+      }
+    } catch (e) {}
+  }, 3000);
+
   // Logger seguro por-job (no modifica console.log global)
   const jobLogger = (...args) => {
     const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
@@ -617,22 +638,19 @@ async function startDistributedBot(chatId, config) {
 
     // Emitir notificaciones de Telegram en tiempo real
     if (telegramBotClient) {
-      if (msg.includes('[RAW_SUCCESS] DNI:')) {
-        const m = msg.match(/\[RAW_SUCCESS\] DNI: (\d+)/);
-        if (m) telegramBotClient.sendMessage(ownerChatId, `⚡ ¡Cupo asegurado (Modo Crudo)!\nDNI: ${m[1]}`).catch(()=>{});
-      }
-      if (msg.includes('[RAW_FAIL] DNI:')) {
-        const m = msg.match(/\[RAW_FAIL\] DNI: (\d+) \| ERROR: (.+)/);
-        if (m) telegramBotClient.sendMessage(ownerChatId, `❌ Sin cupo (RAW)\nDNI: ${m[1]}\nRazón: ${m[2]}`).catch(()=>{});
-      }
-      if (msg.includes('API ABIERTA')) {
-        telegramBotClient.sendMessage(ownerChatId, `🟢 API detectada ABIERTA. Lanzando ataque distribuido...`).catch(()=>{});
+      if (msg.includes('[RAW_SUCCESS]')) {
+        if (!firstSuccessSent) {
+          firstSuccessSent = true;
+          telegramBotClient.sendMessage(ownerChatId, `🔥 ¡La barrera ha caído! El primer cupo acaba de entrar con éxito. Recolectando los demás a velocidad luz...`).catch(()=>{});
+        }
       }
     }
   };
 
   try {
     const result = await executeDistributed(accounts, config, null, jobLogger);
+    clearInterval(probeInterval);
+    apiOpened = true;
 
     // Escribir resumen en formato compatible con notifyJobFinished
     const successes = result.successes;
@@ -652,13 +670,18 @@ async function startDistributedBot(chatId, config) {
 
     // Enviar resumen de Fase 1 por Telegram
     if (telegramBotClient) {
+      const detailsText = result.results.map(r => {
+        const label = r.nombre ? `${r.nombre} (${r.dni})` : `DNI: ${r.dni}`;
+        return r.success ? `✅ ${label}` : `❌ ${label} - ${r.reason || 'Error desconocido'}`;
+      }).join('\n');
+
       let msg;
       if (successes > 0 && successes === total) {
-        msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n✅ ¡PERFECTO! Se aseguraron *todos* los cupos: *${successes}/${total}*\n🌐 Workers usados: ${result.totalWorkers}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
+        msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n✅ ¡PERFECTO! Se aseguraron *todos* los cupos: *${successes}/${total}*\n🌐 Workers usados: ${result.totalWorkers}\n\n${detailsText}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
       } else if (successes > 0) {
-        msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n⚠️ Se aseguraron *${successes}/${total}* cupos.\n🌐 Workers usados: ${result.totalWorkers}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
+        msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n⚠️ Se aseguraron *${successes}/${total}* cupos.\n🌐 Workers usados: ${result.totalWorkers}\n\n${detailsText}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
       } else {
-        msg = `⚠️ *FASE 1 FINALIZADA (DISTRIBUIDO)*\n❌ *0/${total}* cupos asegurados.\n🌐 Workers: ${result.totalWorkers}`;
+        msg = `⚠️ *FASE 1 FINALIZADA (DISTRIBUIDO)*\n❌ *0/${total}* cupos asegurados.\n🌐 Workers: ${result.totalWorkers}\n\n${detailsText}`;
       }
       telegramBotClient.sendMessage(ownerChatId, msg, {parse_mode: "Markdown"}).catch(()=>{});
     }
