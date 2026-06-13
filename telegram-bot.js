@@ -598,8 +598,6 @@ async function startDistributedBot(chatId, config) {
   const stream = fs.createWriteStream(logPath, { flags: "a" });
 
   stream.write(`[${nowIso()}] Job iniciado desde Telegram (DISTRIBUIDO) | jobId=${jobId} | chatId=${ownerChatId}\n`);
-
-  const accounts = config.accounts || [];
   if (accounts.length === 0) {
     stream.write(`[${nowIso()}] Error: No hay cuentas para ejecutar\n`);
     stream.end();
