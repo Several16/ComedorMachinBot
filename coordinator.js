@@ -51,7 +51,7 @@ async function healthCheckAll() {
         signal: AbortSignal.timeout(5000)
       });
       const data = await res.json();
-      results.push({ url, status: "online", ...data });
+      results.push({ url, ...data, status: "online" });
     } catch (e) {
       results.push({ url, status: "offline", error: e.message });
     }
