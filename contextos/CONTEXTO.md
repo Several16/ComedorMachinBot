@@ -55,3 +55,18 @@ Bot de Telegram que automatiza la reserva de cupos de comedor en la Universidad 
 ## 💡 Ideas pendientes (no implementadas)
 - Dashboard responsivo para móviles (actualmente mejor en escritorio).
 - Filtros avanzados y paginación en el lado del servidor para las cuentas si pasan de 100.
+
+---
+## 🛑 CHECKPOINT: Pre-Simulador (12 Junio 2026)
+Antes de proceder con el **"Entorno Clonado de Pruebas"**, certificamos que el bot oficial en `ComedorMachinBot` está 100% ESTABLE y CONFIGURADO:
+- **Coordinador:** Código actualizado, bug de `await` corregido, espera de 20 min automática y encadenamiento en prueba manual.
+- **Workers:** 4 servidores corriendo `worker-api` en puerto 4000, libres de conflictos de Telegram.
+
+**Procedimiento de Reversión (Al terminar las pruebas):**
+1. Apagar el simulador en puerto 5000 (`pm2 delete simulador`).
+2. Apagar los workers de prueba en los puertos 4001 de los 4 VPS (`pm2 delete worker-test`).
+3. Eliminar las carpetas clonadas `Comedor-Simulador`.
+4. Reiniciar los procesos originales para asegurar un inicio limpio:
+   - Principal: `pm2 restart charola-tg`
+   - Workers: `pm2 restart worker-api`
+5. Hacer clic en "Probar ahora" y verificar que devuelva `Workers usados: 4`.

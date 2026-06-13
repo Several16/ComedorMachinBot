@@ -2579,7 +2579,7 @@ app.post("/api/dashboard/execute", panelAuth, async (req, res) => {
   }
   
   try {
-    const result = await startDistributedBot(chatId, {
+    const result = await startDistributedBot(resolvedChatId, {
       accounts,
       turboMode: true,
       waveSize: 4,
