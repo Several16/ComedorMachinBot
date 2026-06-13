@@ -89,50 +89,6 @@
 
         <!-- Main Content -->
         <main class="main-content">
-            <!-- Section: Command Center -->
-            <section class="section" id="commandCenterSection">
-                <div class="section-header">
-                    <h2 class="section-title">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                        Centro de Mando
-                    </h2>
-                </div>
-                
-                <div class="command-grid">
-                    <!-- Controles -->
-                    <div class="command-controls glass-card">
-                        <h3 class="panel-subtitle">Acciones Nucleares</h3>
-                        <div class="btn-group-vertical">
-                            <button id="btnLaunchAttack" class="btn btn-primary btn-nuclear">
-                                <span class="pulse-icon">🔥</span>
-                                <span>LANZAR ATAQUE MASIVO</span>
-                            </button>
-                            <button id="btnAbortAttack" class="btn btn-danger btn-nuclear" disabled>
-                                <span>⏹️ ABORTAR TODO</span>
-                            </button>
-                        </div>
-                        <div class="command-status mt-4">
-                            <p class="text-muted text-sm">Estado del Sistema:</p>
-                            <div class="status-indicator">
-                                <span id="systemStatusDot" class="status-dot"></span>
-                                <span id="systemStatusText">En espera...</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Radar / Terminal en Vivo -->
-                    <div class="command-radar glass-card">
-                        <div class="radar-header">
-                            <span class="radar-title">📡 Radar de Ataque en Vivo</span>
-                            <span class="radar-pulse"></span>
-                        </div>
-                        <div class="radar-terminal" id="liveTerminal">
-                            <div class="terminal-line text-muted">Esperando señales...</div>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
             <!-- Section: Workers -->
             <section class="section" id="workersSection">
                 <div class="section-header">

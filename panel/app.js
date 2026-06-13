@@ -80,14 +80,6 @@
         historyTimer: $('#historyTimer'),
         refreshHistoryBtn: $('#refreshHistoryBtn'),
         executeBtn: $('#executeBtn'),
-        
-        // Command Center
-        btnLaunchAttack: $('#btnLaunchAttack'),
-        btnAbortAttack: $('#btnAbortAttack'),
-        systemStatusDot: $('#systemStatusDot'),
-        systemStatusText: $('#systemStatusText'),
-        liveTerminal: $('#liveTerminal'),
-
         cronExpression: $('#cronExpression'),
         nextExecution: $('#nextExecution'),
         healthCheckBtn: $('#healthCheckBtn'),
@@ -939,99 +931,8 @@
         state.intervals = {};
     }
 
-    // ── Command Center ─────────────────────────────────────────
-    let logTailInterval = null;
-
-    function startLiveRadar() {
-        if (logTailInterval) clearInterval(logTailInterval);
-        DOM.liveTerminal.innerHTML = '<div class="terminal-line text-muted">Conectando al radar...</div>';
-        DOM.systemStatusText.textContent = "Ataque en progreso...";
-        DOM.systemStatusDot.style.background = "var(--error)";
-        DOM.systemStatusDot.style.boxShadow = "0 0 10px var(--error)";
-        DOM.systemStatusDot.classList.add('pulse-dot');
-        DOM.btnLaunchAttack.disabled = true;
-        DOM.btnAbortAttack.disabled = false;
-
-        logTailInterval = setInterval(async () => {
-            try {
-                const res = await api('GET', '/api/admin/log-tail');
-                if (res.ok && res.data.tail) {
-                    const lines = res.data.tail.split('\\n').filter(l => l.trim());
-                    if (lines.length > 0) {
-                        DOM.liveTerminal.innerHTML = '';
-                        lines.slice(-15).forEach(line => {
-                            const el = document.createElement('div');
-                            el.className = 'terminal-line';
-                            if (line.includes('[RAW_SUCCESS]')) el.classList.add('success');
-                            else if (line.includes('[RAW_FAIL]')) el.classList.add('error');
-                            else if (line.includes('[WARMUP]')) el.classList.add('info');
-                            else if (line.includes('API ABIERTA')) el.classList.add('success');
-                            el.textContent = line;
-                            DOM.liveTerminal.appendChild(el);
-                        });
-                        DOM.liveTerminal.scrollTop = DOM.liveTerminal.scrollHeight;
-                    }
-
-                    if (!res.data.botRunning) {
-                        stopLiveRadar();
-                        refreshHistory();
-                        refreshStats();
-                    }
-                } else if (res.ok && !res.data.botRunning) {
-                    stopLiveRadar();
-                }
-            } catch (e) {}
-        }, 1500);
-    }
-
-    function stopLiveRadar() {
-        if (logTailInterval) clearInterval(logTailInterval);
-        logTailInterval = null;
-        DOM.systemStatusText.textContent = "En espera...";
-        DOM.systemStatusDot.style.background = "var(--success)";
-        DOM.systemStatusDot.style.boxShadow = "0 0 10px var(--success-glow)";
-        DOM.systemStatusDot.classList.remove('pulse-dot');
-        DOM.btnLaunchAttack.disabled = false;
-        DOM.btnAbortAttack.disabled = true;
-        
-        const el = document.createElement('div');
-        el.className = 'terminal-line text-muted';
-        el.textContent = '--- Transmisión finalizada ---';
-        DOM.liveTerminal.appendChild(el);
-        DOM.liveTerminal.scrollTop = DOM.liveTerminal.scrollHeight;
-    }
-
-    function initCommandCenter() {
-        DOM.btnLaunchAttack.addEventListener('click', async () => {
-            const confirmed = await confirm('☢️', 'Lanzamiento Nuclear', '¿Estás completamente seguro de lanzar un ataque masivo ahora mismo ignorando el reloj?');
-            if (!confirmed) return;
-            try {
-                const res = await api('POST', '/api/dashboard/execute', {});
-                if (res.ok) {
-                    toast('success', 'Ataque Iniciado', 'Fase 1 distribuida lanzada con éxito.');
-                    startLiveRadar();
-                } else {
-                    toast('error', 'Error', res.data.message || 'No se pudo lanzar el ataque.');
-                }
-            } catch (e) {
-                toast('error', 'Error de red', e.message);
-            }
-        });
-        
-        DOM.btnAbortAttack.addEventListener('click', () => {
-            toast('warning', 'En desarrollo', 'El sistema de aborto está en construcción.');
-        });
-        
-        api('GET', '/api/admin/log-tail').then(res => {
-            if (res.ok && res.data.botRunning) {
-                startLiveRadar();
-            }
-        }).catch(()=>{});
-    }
-
     // ── Init Dashboard ─────────────────────────────────────────
     async function initDashboard() {
-        initCommandCenter();
         clearAllIntervals();
         updateClock();
         updateUptime();
