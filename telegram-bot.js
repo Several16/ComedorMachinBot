@@ -4,6 +4,7 @@ require("dotenv").config({ path: path.join(__dirname, ".env") });
 const crypto = require("crypto");
 const { spawn } = require("child_process");
 const express = require("express");
+const AdmZip = require("adm-zip");
 const TelegramBot = require("node-telegram-bot-api");
 const cron = require("node-cron");
 const { executeDistributed, healthCheckAll, getWorkerUrls } = require("./coordinator");
@@ -2248,6 +2249,7 @@ bot.on("polling_error", (error) => {
 const app = express();
 app.use(express.json());
 app.use("/", express.static(PANEL_DIR));
+app.use("/screenshots", express.static(path.join(DATA_DIR, "screenshots")));
 
 function panelAuth(req, res, next) {
   const key = String(req.headers["x-admin-key"] || req.query.key || "");
@@ -2748,6 +2750,63 @@ app.post("/api/dashboard/accounts/toggle", panelAuth, (req, res) => {
   acc.active = active; // Save toggle state (true/false)
   saveState();
   res.json({ ok: true, active: acc.active });
+});
+
+// GET /api/dashboard/gallery - List today's screenshots
+app.get("/api/dashboard/gallery", panelAuth, (_req, res) => {
+  const screenshotsDir = path.join(DATA_DIR, "screenshots");
+  if (!fs.existsSync(screenshotsDir)) {
+    return res.json({ ok: true, images: [] });
+  }
+  
+  try {
+    const files = fs.readdirSync(screenshotsDir)
+      .filter(f => f.endsWith('.png'))
+      .map(f => {
+        const stat = fs.statSync(path.join(screenshotsDir, f));
+        return {
+          name: f,
+          url: `/screenshots/${f}`,
+          time: stat.mtime.getTime(),
+          size: stat.size
+        };
+      })
+      .sort((a, b) => b.time - a.time); // newest first
+      
+    res.json({ ok: true, images: files });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/dashboard/gallery/download - Download all as ZIP
+app.get("/api/dashboard/gallery/download", panelAuth, (_req, res) => {
+  const screenshotsDir = path.join(DATA_DIR, "screenshots");
+  if (!fs.existsSync(screenshotsDir)) {
+    return res.status(404).send("No hay capturas disponibles.");
+  }
+  
+  try {
+    const zip = new AdmZip();
+    const files = fs.readdirSync(screenshotsDir).filter(f => f.endsWith('.png'));
+    
+    if (files.length === 0) {
+      return res.status(404).send("La carpeta de capturas está vacía.");
+    }
+    
+    files.forEach(f => {
+      zip.addLocalFile(path.join(screenshotsDir, f));
+    });
+    
+    const zipBuffer = zip.toBuffer();
+    
+    res.set('Content-Type', 'application/zip');
+    res.set('Content-Disposition', `attachment; filename=Tickets-UNCP-${stamp()}.zip`);
+    res.set('Content-Length', zipBuffer.length);
+    res.send(zipBuffer);
+  } catch (err) {
+    res.status(500).send("Error creando el archivo ZIP: " + err.message);
+  }
 });
 
 // GET /api/dashboard/schedule - Get schedule overview (today's active accounts)
