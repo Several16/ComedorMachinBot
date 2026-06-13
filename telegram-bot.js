@@ -2383,6 +2383,7 @@ app.get("/api/dashboard/accounts", panelAuth, (_req, res) => {
         nombre: acc.nombre || '',
         grupo: acc.grupo || 'Sin Grupo',
         dias: acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'], // Default lun-vie
+        active: acc.active,
       });
     }
   }
@@ -2764,6 +2765,8 @@ app.get("/api/dashboard/schedule", panelAuth, (_req, res) => {
   for (const [chatId, user] of Object.entries(licenses.users)) {
     const accounts = user?.autoRun?.accounts || [];
     for (const acc of accounts) {
+      if (acc.active === false) continue; // Ignorar cuentas desactivadas
+      
       const activeDays = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie']; // Default: lun-vie
       for (const day of activeDays) {
         if (schedule[day]) {
