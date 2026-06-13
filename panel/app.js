@@ -1031,7 +1031,9 @@
 
         scheduleBody.innerHTML = accounts.map((acc, i) => {
             const dias = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'];
-            const isActiveToday = dias.includes(todayDay);
+            const isGloballyInactive = acc.active === false;
+            const isActiveToday = dias.includes(todayDay) && !isGloballyInactive;
+            
             if (isActiveToday) activeToday++;
 
             const dayCells = ALL_DAYS.map(day => {
@@ -1043,13 +1045,14 @@
                             data-chatid="${escapeHtml(acc.chatId)}" 
                             data-dni="${escapeHtml(acc.dni)}" 
                             data-day="${day}"
+                            ${isGloballyInactive ? 'disabled style="cursor: not-allowed; opacity: 0.3"' : ''}
                             title="${isActive ? 'Desactivar' : 'Activar'} ${day.toUpperCase()}">
                         ${isActive ? '✅' : '❌'}
                     </button>
                 </td>`;
             }).join('');
 
-            const rowClass = isActiveToday ? '' : 'schedule-row-inactive';
+            const rowClass = isGloballyInactive ? 'inactive-row' : (isActiveToday ? '' : 'schedule-row-inactive');
             return `<tr class="fade-in ${rowClass}" style="animation-delay: ${i * 0.02}s">
                 <td><strong>${escapeHtml(acc.nombre || '—')}</strong></td>
                 <td class="text-muted">${escapeHtml(acc.dni)}</td>
