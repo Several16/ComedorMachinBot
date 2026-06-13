@@ -609,26 +609,8 @@ async function startDistributedBot(chatId, config) {
   runningJobs.set(jobId, distributedJob);
   startLoadingIndicator(ownerChatId);
 
-  const uncpApiUrl = process.env.UNCP_API_URL || "https://comensales.uncp.edu.pe/api/registros";
-  let apiOpened = false;
   let firstSuccessSent = false;
-
-  const probeInterval = setInterval(async () => {
-    if (apiOpened) return clearInterval(probeInterval);
-    try {
-      const res = await fetch(uncpApiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ Tipo_Documento: "1", Numero_Documento: "00000000", Codigo: "PROBE" })
-      });
-      const data = await res.json();
-      if (data.code !== 300) {
-        apiOpened = true;
-        clearInterval(probeInterval);
-        if (telegramBotClient) telegramBotClient.sendMessage(ownerChatId, `🟢 ¡La universidad acaba de ABRIR la puerta! Lanzando el ataque masivo...`).catch(()=>{});
-      }
-    } catch (e) {}
-  }, 3000);
+  let apiOpenedMsgSent = false;
 
   // Logger seguro por-job (no modifica console.log global)
   const jobLogger = (...args) => {
@@ -638,6 +620,13 @@ async function startDistributedBot(chatId, config) {
 
     // Emitir notificaciones de Telegram en tiempo real
     if (telegramBotClient) {
+      if (msg.includes('API ABIERTA') || msg.includes('API activa')) {
+        if (!apiOpenedMsgSent) {
+          apiOpenedMsgSent = true;
+          telegramBotClient.sendMessage(ownerChatId, `🟢 ¡La universidad acaba de ABRIR la puerta! Lanzando el ataque masivo...`).catch(()=>{});
+        }
+      }
+      
       if (msg.includes('[RAW_SUCCESS]')) {
         if (!firstSuccessSent) {
           firstSuccessSent = true;
@@ -649,8 +638,6 @@ async function startDistributedBot(chatId, config) {
 
   try {
     const result = await executeDistributed(accounts, config, null, jobLogger);
-    clearInterval(probeInterval);
-    apiOpened = true;
 
     // Escribir resumen en formato compatible con notifyJobFinished
     const successes = result.successes;
