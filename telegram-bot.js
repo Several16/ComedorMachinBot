@@ -2456,7 +2456,10 @@ app.get("/api/dashboard/history", panelAuth, (_req, res) => {
   try {
     const logFiles = fs.readdirSync(LOGS_DIR)
       .filter(f => f.startsWith('tg-') && f.endsWith('.log'))
-      .sort().reverse().slice(0, 20);
+      .map(f => ({ name: f, time: fs.statSync(path.join(LOGS_DIR, f)).mtime.getTime() }))
+      .sort((a, b) => b.time - a.time)
+      .map(f => f.name)
+      .slice(0, 20);
     
     for (const file of logFiles) {
       const fullPath = path.join(LOGS_DIR, file);
