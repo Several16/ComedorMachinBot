@@ -508,6 +508,8 @@
             const grupo = a.grupo || 'Sin Grupo';
             const status = a.status || a.estado || a.lastStatus || null;
 
+            const isActive = a.active !== false;
+
             let badgeHtml = '<span class="badge badge-neutral">—</span>';
             if (status) {
                 const s = String(status).toLowerCase();
@@ -519,9 +521,16 @@
                     badgeHtml = `<span class="badge badge-warning">${escapeHtml(status)}</span>`;
                 }
             }
+            
+            const toggleHtml = `
+                <label class="toggle-switch" title="Activar/Desactivar cuenta">
+                    <input type="checkbox" class="account-toggle" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" ${isActive ? 'checked' : ''}>
+                    <span class="toggle-slider"></span>
+                </label>
+            `;
 
             return `
-                <tr class="fade-in" style="animation-delay: ${i * 0.03}s" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}">
+                <tr class="fade-in ${isActive ? '' : 'inactive-row'}" style="animation-delay: ${i * 0.03}s" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}">
                     <td>
                         <input type="number" class="form-input order-input" value="${i + 1}" min="1" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" data-current-index="${i}" style="width: 50px; text-align: center; padding: 0.2rem; height: auto;">
                     </td>
@@ -531,9 +540,12 @@
                     <td><span class="badge badge-neutral clickable-group" style="cursor: pointer;" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" data-current-group="${escapeHtml(String(grupo))}" title="Clic para cambiar grupo">${escapeHtml(String(grupo))}</span></td>
                     <td>${badgeHtml}</td>
                     <td>
-                        <button class="btn-delete-sm" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" title="Eliminar cuenta">
-                            ✕
-                        </button>
+                        <div style="display: flex; gap: 0.5rem; align-items: center; justify-content: flex-end;">
+                            ${toggleHtml}
+                            <button class="btn-delete-sm" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" title="Eliminar cuenta">
+                                ✕
+                            </button>
+                        </div>
                     </td>
                 </tr>`;
         }).join('');
@@ -541,6 +553,34 @@
         // Attach delete handlers
         DOM.accountsBody.querySelectorAll('.btn-delete-sm').forEach(btn => {
             btn.addEventListener('click', () => deleteAccount(btn.dataset.chatid || 'any', btn.dataset.dni));
+        });
+
+        // Attach toggle handlers
+        DOM.accountsBody.querySelectorAll('.account-toggle').forEach(chk => {
+            chk.addEventListener('change', async (e) => {
+                const dni = e.target.dataset.dni;
+                const chatId = e.target.dataset.chatid || 'any';
+                const active = e.target.checked;
+                
+                try {
+                    const res = await api('POST', '/api/dashboard/accounts/toggle', { chatId, dni, active });
+                    if (!res.ok) {
+                        e.target.checked = !active; // revert
+                        toast('error', 'Error', res.data.message || 'No se pudo cambiar el estado.');
+                    } else {
+                        // Optimistically update local state so pagination doesn't break
+                        const acc = state.accounts.find(a => String(a.dni) === String(dni));
+                        if (acc) acc.active = active;
+                        
+                        const row = e.target.closest('tr');
+                        if (active) row.classList.remove('inactive-row');
+                        else row.classList.add('inactive-row');
+                    }
+                } catch (err) {
+                    e.target.checked = !active; // revert
+                    toast('error', 'Error', 'Error de red.');
+                }
+            });
         });
 
         // Attach interactive handlers (Order and Group)

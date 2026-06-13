@@ -570,6 +570,19 @@ async function notifyJobFinished(exitInfo) {
 
 // ── Modo Distribuido: usar coordinador para ejecutar en workers ──
 async function startDistributedBot(chatId, config) {
+  // If accounts are passed in config, use them, otherwise default to all active accounts for the user
+  let accounts = config.accounts;
+  if (!accounts) {
+    const user = licenses.users[chatId];
+    if (!user || !user.autoRun || !user.autoRun.accounts) {
+      return { started: false, reason: "No accounts configured" };
+    }
+    accounts = user.autoRun.accounts;
+  }
+  
+  // FILTER ACTIVE ACCOUNTS ONLY
+  accounts = accounts.filter(acc => acc.active !== false);
+
   const ownerChatId = String(chatId);
   const ownRunningJobs = listRunningJobs(ownerChatId);
   
@@ -2721,6 +2734,22 @@ app.put("/api/dashboard/accounts/schedule/bulk", panelAuth, (req, res) => {
   }
   saveState();
   res.json({ ok: true, message: `Schedule updated for all accounts`, dias: filtered, count: licenses.users[chatId].autoRun.accounts.length });
+});
+
+// POST /api/dashboard/accounts/toggle - Toggle active state of an account
+app.post("/api/dashboard/accounts/toggle", panelAuth, (req, res) => {
+  const { chatId, dni, active } = req.body || {};
+  if (!chatId || !dni) {
+    return res.status(400).json({ ok: false, message: "chatId and dni required" });
+  }
+  
+  const user = ensureUserAutoRun(chatId);
+  const acc = user.autoRun.accounts?.find(a => a.dni === String(dni));
+  if (!acc) return res.status(404).json({ ok: false, message: "Account not found" });
+  
+  acc.active = active; // Save toggle state (true/false)
+  saveState();
+  res.json({ ok: true, active: acc.active });
 });
 
 // GET /api/dashboard/schedule - Get schedule overview (today's active accounts)
