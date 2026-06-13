@@ -12,7 +12,6 @@
     "start:pm2": "pm2 start telegram-bot.js --name charola-tg"
   },
   "dependencies": {
-    "adm-zip": "^0.5.17",
     "dotenv": "^17.4.2",
     "express": "^4.21.2",
     "node-cron": "^4.2.1",

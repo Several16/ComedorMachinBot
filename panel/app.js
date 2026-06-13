@@ -83,16 +83,6 @@
         cronExpression: $('#cronExpression'),
         nextExecution: $('#nextExecution'),
         healthCheckBtn: $('#healthCheckBtn'),
-        
-        // Gallery
-        refreshGalleryBtn: $('#refreshGalleryBtn'),
-        galleryLoading: $('#galleryLoading'),
-        galleryEmpty: $('#galleryEmpty'),
-        galleryGrid: $('#galleryGrid'),
-        imageModal: $('#imageModal'),
-        modalImage: $('#modalImage'),
-        modalCaption: $('#modalCaption'),
-        closeModalBtn: $('.close-modal'),
         systemUptime: $('#systemUptime'),
         // Group Popover
         groupPopover: $('#groupPopover'),
@@ -925,92 +915,6 @@
     }
 
     // ── Health Check ───────────────────────────────────────────
-    function updateUptime() {
-        if (!state.startTime) return;
-        const diff = Date.now() - state.startTime;
-        const seconds = Math.floor((diff / 1000) % 60);
-        const minutes = Math.floor((diff / (1000 * 60)) % 60);
-        const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
-        const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-        
-        let text = [];
-        if (days > 0) text.push(`${days}d`);
-        if (hours > 0) text.push(`${hours}h`);
-        if (minutes > 0) text.push(`${minutes}m`);
-        text.push(`${seconds}s`);
-        
-        DOM.uptimeVal.textContent = text.join(' ');
-    }
-
-    function clearAllIntervals() {
-        Object.values(state.intervals).forEach(clearInterval);
-        state.intervals = {};
-    }
-
-    // ── Gallery ────────────────────────────────────────────────
-    async function loadGallery() {
-        DOM.galleryLoading.style.display = 'block';
-        DOM.galleryGrid.style.display = 'none';
-        DOM.galleryEmpty.style.display = 'none';
-        
-        try {
-            const res = await api('GET', '/api/dashboard/gallery');
-            DOM.galleryLoading.style.display = 'none';
-            
-            if (res.ok && res.data && res.data.images && res.data.images.length > 0) {
-                DOM.galleryGrid.innerHTML = res.data.images.map(img => {
-                    // Extract a clean name
-                    const nameParts = img.name.replace('.png', '').split('-');
-                    const displayName = nameParts.length > 2 ? nameParts.slice(2).join(' ') : img.name;
-                    return `
-                        <div class="gallery-item" data-url="${escapeHtml(img.url)}" data-name="${escapeHtml(displayName)}">
-                            <img src="${escapeHtml(img.url)}" alt="${escapeHtml(displayName)}" loading="lazy">
-                            <div class="gallery-item-caption">${escapeHtml(displayName)}</div>
-                        </div>
-                    `;
-                }).join('');
-                
-                DOM.galleryGrid.style.display = 'grid';
-                
-                // Attach click to open modal
-                DOM.galleryGrid.querySelectorAll('.gallery-item').forEach(item => {
-                    item.addEventListener('click', () => {
-                        DOM.modalImage.src = item.dataset.url;
-                        DOM.modalCaption.textContent = item.dataset.name;
-                        DOM.imageModal.style.display = 'block';
-                        document.body.style.overflow = 'hidden';
-                    });
-                });
-            } else {
-                DOM.galleryEmpty.style.display = 'flex';
-            }
-        } catch (err) {
-            DOM.galleryLoading.style.display = 'none';
-            DOM.galleryEmpty.style.display = 'flex';
-            DOM.galleryEmpty.querySelector('.empty-state-text').textContent = 'Error cargando la galería.';
-        }
-    }
-
-    // Modal close handlers
-    if (DOM.closeModalBtn) {
-        DOM.closeModalBtn.addEventListener('click', () => {
-            DOM.imageModal.style.display = 'none';
-            document.body.style.overflow = '';
-        });
-    }
-    if (DOM.imageModal) {
-        window.addEventListener('click', (e) => {
-            if (e.target === DOM.imageModal) {
-                DOM.imageModal.style.display = 'none';
-                document.body.style.overflow = '';
-            }
-        });
-    }
-
-    if (DOM.refreshGalleryBtn) {
-        DOM.refreshGalleryBtn.addEventListener('click', loadGallery);
-    }
-
     async function healthCheck() {
         DOM.healthCheckBtn.disabled = true;
         DOM.healthCheckBtn.innerHTML = '<span class="spinner"></span> Verificando...';
@@ -1082,8 +986,6 @@
             fetchSchedule(),
             fetchUsers(),
         ]);
-        
-        loadGallery();
 
         startTimers();
     }

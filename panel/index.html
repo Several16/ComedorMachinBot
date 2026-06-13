@@ -397,47 +397,6 @@
                     </div>
                 </div>
             </section>
-
-            <!-- Section: Gallery -->
-            <section class="section" id="gallerySection">
-                <div class="section-header">
-                    <h2 class="section-title">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                        Galería de Tickets (QRs)
-                    </h2>
-                    <div class="section-actions">
-                        <button class="btn btn-ghost btn-sm" id="refreshGalleryBtn" title="Actualizar Galería">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-                        </button>
-                        <a href="/api/dashboard/gallery/download" class="btn btn-primary btn-sm" id="downloadAllGalleryBtn" target="_blank" title="Descargar todo en ZIP">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                            Descargar .ZIP
-                        </a>
-                    </div>
-                </div>
-                
-                <div class="glass-card gallery-card">
-                    <div id="galleryLoading" class="gallery-loading">
-                        <div class="spinner"></div> Cargando capturas...
-                    </div>
-                    <div id="galleryEmpty" class="empty-state" style="display: none; min-height: 200px;">
-                        <div class="empty-state-icon">📸</div>
-                        <div class="empty-state-text">No hay tickets capturados hoy.</div>
-                    </div>
-                    <div id="galleryGrid" class="gallery-grid" style="display: none;">
-                        <!-- Images will be rendered here -->
-                    </div>
-                </div>
-
-                <!-- Modal for Image Viewing -->
-                <div id="imageModal" class="modal">
-                    <div class="modal-content image-modal-content">
-                        <span class="close-modal">&times;</span>
-                        <img id="modalImage" src="" alt="Ticket Ampliado">
-                        <div id="modalCaption" class="modal-caption"></div>
-                    </div>
-                </div>
-            </section>
         </main>
 
         <!-- Footer -->
