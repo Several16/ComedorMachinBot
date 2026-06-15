@@ -119,9 +119,8 @@ app.post("/execute", async (req, res) => {
     aborted: false
   };
 
-  try {
-    const result = await executeRawBatch(accounts, config || {});
-
+  // Ejecutar en background para evitar Timeout de DigitalOcean (Idle Drop)
+  executeRawBatch(accounts, config || {}).then(result => {
     const response = {
       jobId,
       workerId: WORKER_ID,
@@ -137,21 +136,21 @@ app.post("/execute", async (req, res) => {
       result: response,
       completedAt: new Date().toISOString()
     };
-
+    
     console.log(`[WORKER:${WORKER_ID}] Job ${jobId} completado: ${result.successes}/${result.total} éxitos en ${Math.round(result.durationMs / 1000)}s`);
-
-    res.json(response);
-
-  } catch (error) {
+  }).catch(error => {
     console.error(`[WORKER:${WORKER_ID}] Error en job ${jobId}:`, error.message);
-    res.status(500).json({
-      error: error.message,
-      workerId: WORKER_ID,
-      jobId
-    });
-  } finally {
+    lastExecution = {
+      jobId,
+      result: { error: error.message },
+      completedAt: new Date().toISOString()
+    };
+  }).finally(() => {
     currentExecution = null;
-  }
+  });
+
+  // Responder inmediatamente que el job ha comenzado
+  res.json({ status: "started", jobId, workerId: WORKER_ID });
 });
 
 // ══════════════════════════════════════════

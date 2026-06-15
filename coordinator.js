@@ -160,26 +160,44 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
         signal: AbortSignal.timeout(900000) // 15 minutos timeout (warmup puede tardar hasta 10min)
       });
 
-      const data = await res.json();
+      const startData = await res.json();
 
-      // CRITICAL: Check if worker returned an error (HTTP 500, etc.)
-      // fetch() does NOT throw on HTTP errors, only on network failures
-      if (!res.ok || data.error) {
-        const errMsg = data.error || `HTTP ${res.status}: ${res.statusText}`;
-        throw new Error(`Worker respondió con error: ${errMsg}`);
+      if (!res.ok || startData.error) {
+        throw new Error(`Worker falló al iniciar: ${startData.error || res.statusText}`);
       }
 
-      // Validate response has required fields
-      if (typeof data.successes === 'undefined' || typeof data.total === 'undefined') {
-        log(`[COORD] ⚠️ ${workerName}: Respuesta incompleta: ${JSON.stringify(data).substring(0, 200)}`);
-        throw new Error(`Worker respondió sin campos successes/total: ${JSON.stringify(data).substring(0, 100)}`);
+      // ── Polling (evitar Idle Drop) ──
+      const targetJobId = `${jobId}-${workerName}`;
+      let finalData = null;
+      
+      while (true) {
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Esperar 5s
+        try {
+          const statRes = await fetch(`${url}/status`, {
+            headers: { "Authorization": `Bearer ${apiKey}` },
+            signal: AbortSignal.timeout(10000)
+          });
+          const stat = await statRes.json();
+          
+          if (stat.running === false && stat.lastExecution && stat.lastExecution.jobId === targetJobId) {
+            finalData = stat.lastExecution.result;
+            break;
+          }
+        } catch (pollErr) {
+          log(`[COORD] ⚠️ ${workerName}: Falló un ping de status, reintentando en 5s... (${pollErr.message})`);
+          // Ignorar timeouts de polling, seguir intentando
+        }
       }
 
-      log(`[COORD] ← ${workerName}: ${data.successes}/${data.total} éxitos (${Math.round(data.durationMs / 1000)}s)`);
+      if (finalData.error) {
+        throw new Error(`Worker reportó error interno: ${finalData.error}`);
+      }
 
-      if (onProgress) onProgress({ workerId: workerName, ...data });
+      log(`[COORD] ← ${workerName}: ${finalData.successes}/${finalData.total} éxitos (${Math.round(finalData.durationMs / 1000)}s)`);
 
-      return { workerId: workerName, url, ...data };
+      if (onProgress) onProgress({ workerId: workerName, ...finalData });
+
+      return { workerId: workerName, url, ...finalData };
 
     } catch (e) {
       logError(`[COORD] ← ${workerName}: ERROR — ${e.message}`);
