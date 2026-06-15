@@ -17,6 +17,15 @@ OBJETIVOS LOGRADOS EN ESTA SESIÓN:
    - Modificación en `charola-engine.js`: Se actualizó `executeRawBatch` para leer `config.skipWarmup`. Si es `true`, el Worker se salta el sondeo y lanza la Fase B (Oleadas) inmediatamente con 0ms de retraso.
    - Resultado: Los 4 workers actúan como un enjambre perfectamente sincronizado. Atacan la API de la UNCP en el mismo milisegundo exacto, replicando la agresividad del bot antiguo, pero con la capacidad de procesar 40-60 cuentas (gracias a los recursos divididos de los droplets).
 
+4. MATEMÁTICA DEL REPARTO Y ATAQUE EN OLEADAS (WAVES):
+   - Para evitar bloqueos de base de datos (Deadlocks) en la UNCP al lanzar 60 cuentas simultáneamente, se conservó la lógica de "Oleadas" (Waves) dentro de cada Worker, pero sincronizada globalmente.
+   - Ejemplo de 19 cuentas (Usuario 2):
+     - Reparto del Coordinador: Worker 1 recibe 5, Worker 2 recibe 5, Worker 3 recibe 5, Worker 4 recibe 4.
+     - Formación interna: Cada Worker divide su paquete en rondas de máx 4 cuentas (`WAVE_SIZE = 4`), separadas por 500ms (`WAVE_DELAY_MS = 500`).
+     - Ataque a los 0ms (Ronda 1): Worker 1 lanza 4, Worker 2 lanza 4, Worker 3 lanza 4, Worker 4 lanza 4. Impacto: 16 peticiones concurrentes instantáneas.
+     - Ataque a los 500ms (Ronda 2): Worker 1 lanza 1, Worker 2 lanza 1, Worker 3 lanza 1. Impacto: 3 peticiones.
+   - Conclusión: 19 cuentas son inyectadas exitosamente al servidor en exactamente 0.5 segundos, distribuyendo la carga de red sin asfixiar la base de datos receptora.
+
 ESTADO ACTUAL Y DESPLIEGUE:
 - El código se encuentra refactorizado, commiteado y pusheado a la rama `main` en GitHub.
-- Pendiente por parte del usuario: Ejecutar `git pull && pm2 restart all` en el Servidor Principal y en las 4 máquinas Worker para que la sincronización aplique en la ejecución real de mañana.
+- Pendiente por parte del usuario: Ejecutar `git pull origin main && pm2 restart all` en el Servidor Principal y en las 4 máquinas Worker para que la sincronización aplique en la ejecución real de mañana.
