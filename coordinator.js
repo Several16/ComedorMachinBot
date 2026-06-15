@@ -115,7 +115,20 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
     };
   }
 
-  // 3. Distribuir cuentas
+  // 3. WARMUP CENTRALIZADO DESDE EL COORDINADOR
+  log(`[COORD] Iniciando WARM-UP centralizado (los workers esperarán la señal de ataque)...`);
+  const { warmUpWaitForApiOpen } = require("./charola-engine");
+  const probeAccount = accounts[0];
+  const maxWarmupMs = config.maxWarmupMs || 10 * 60 * 1000;
+  
+  const warmup = await warmUpWaitForApiOpen(probeAccount, maxWarmupMs);
+  if (warmup.probeSuccess) {
+    log(`[COORD] ⚡ ¡API ABIERTA! Cuenta sonda asegurada. Disparando a los workers simultáneamente...`);
+  } else {
+    log(`[COORD] ⚠️ Tiempo de warmup agotado o error en sonda. Disparando a los workers de todas formas...`);
+  }
+
+  // 4. Distribuir cuentas
   const onlineUrls = onlineWorkers.map(w => w.url);
   const groups = distributeAccounts(accounts, onlineUrls.length);
 
@@ -125,8 +138,8 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
     log(`[COORD]   ${workerName} (${url}): ${groups[i].length} cuentas`);
   });
 
-  // 4. Enviar a todos los workers en PARALELO
-  log(`[COORD] Enviando a ${onlineUrls.length} workers simultáneamente...`);
+  // 5. Enviar a todos los workers en PARALELO
+  log(`[COORD] Enviando a ${onlineUrls.length} workers simultáneamente con desfase 0ms...`);
 
   const workerPromises = onlineUrls.map(async (url, i) => {
     const workerName = onlineWorkers[i].workerId || `worker-${i + 1}`;
@@ -137,7 +150,7 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
     }
 
     try {
-      log(`[COORD] → Enviando ${workerAccounts.length} cuentas a ${workerName}...`);
+      log(`[COORD] → Ordenando ataque a ${workerName} con ${workerAccounts.length} cuentas...`);
 
       const res = await fetch(`${url}/execute`, {
         method: "POST",
@@ -149,6 +162,7 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
           jobId: `${jobId}-${workerName}`,
           accounts: workerAccounts,
           config: {
+            skipWarmup: true,
             waveSize: config.waveSize || 4,
             waveDelayMs: config.waveDelayMs || 500,
             maxPostAttempts: config.maxPostAttempts || 150,

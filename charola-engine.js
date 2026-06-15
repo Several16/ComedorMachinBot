@@ -228,19 +228,24 @@ async function executeRawBatch(accounts, config = {}) {
   console.log(`[ENGINE] Config: waveSize=${waveSize}, waveDelay=${waveDelayMs}ms, maxAttempts=${config.maxPostAttempts || 150}`);
 
   // ── FASE A: Warm-up ──
-  const probeAccount = accounts[0];
-  const warmup = await warmUpWaitForApiOpen(probeAccount, maxWarmupMs);
-
   let pendingAccounts;
   const results = [];
 
-  if (warmup.probeSuccess) {
-    pendingAccounts = accounts.filter(a => a.dni !== probeAccount.dni);
-    results.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre, method: "warmup" });
-    console.log(`[ENGINE] Cuenta sonda (${probeAccount.dni}) asegurada. Atacando ${pendingAccounts.length} restantes...`);
-  } else {
+  if (config.skipWarmup) {
+    console.log(`[ENGINE] ⚡ Saltando WARMUP por orden del Coordinador. Lanzando cuentas con desfase 0ms...`);
     pendingAccounts = [...accounts];
-    console.log(`[ENGINE] API ${warmup.open ? 'abierta' : 'estado desconocido'}. Atacando TODAS las ${pendingAccounts.length} cuentas...`);
+  } else {
+    const probeAccount = accounts[0];
+    const warmup = await warmUpWaitForApiOpen(probeAccount, maxWarmupMs);
+
+    if (warmup.probeSuccess) {
+      pendingAccounts = accounts.filter(a => a.dni !== probeAccount.dni);
+      results.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre, method: "warmup" });
+      console.log(`[ENGINE] Cuenta sonda (${probeAccount.dni}) asegurada. Atacando ${pendingAccounts.length} restantes...`);
+    } else {
+      pendingAccounts = [...accounts];
+      console.log(`[ENGINE] API ${warmup.open ? 'abierta' : 'estado desconocido'}. Atacando TODAS las ${pendingAccounts.length} cuentas...`);
+    }
   }
 
   // ── FASE B: Oleadas ──
