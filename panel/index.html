@@ -326,8 +326,9 @@
                 </div>
                 <div class="glass-card" style="padding: 1.25rem;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
-                        <p class="text-muted" style="margin: 0;">Activa/desactiva los días para cada cuenta. Solo se reservan cupos para los días activados.</p>
-                        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <p class="text-muted" style="margin: 0; flex: 1; min-width: 250px;">Activa/desactiva los días para cada cuenta. Solo se reservan cupos para los días activados.</p>
+                        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                            <input type="text" id="searchScheduleInput" class="form-input form-input-sm" style="margin-bottom: 0; min-width: 200px;" placeholder="🔍 Buscar Nombre, DNI..." autocomplete="off">
                             <button class="btn btn-ghost btn-sm" id="scheduleAllDays" title="Activar lun-vie para todos">✅ Todos Lun-Vie</button>
                             <button class="btn btn-ghost btn-sm" id="scheduleRefresh" title="Refrescar">🔄 Refrescar</button>
                         </div>

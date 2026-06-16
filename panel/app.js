@@ -72,6 +72,7 @@
         accountsBody: $('#accountsBody'),
         accountsCount: $('#accountsCount'),
         searchAccountInput: $('#searchAccountInput'),
+        searchScheduleInput: $('#searchScheduleInput'),
         groupFilterSelect: $('#groupFilterSelect'),
         prevPageBtn: $('#prevPageBtn'),
         nextPageBtn: $('#nextPageBtn'),
@@ -1043,10 +1044,31 @@
             return;
         }
 
-        // Count today's active accounts
+        // Count today's active accounts (ignoring filter)
         let activeToday = 0;
+        for (const acc of accounts) {
+            const dias = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'];
+            const isGloballyInactive = acc.active === false;
+            if (dias.includes(todayDay) && !isGloballyInactive) activeToday++;
+        }
 
-        scheduleBody.innerHTML = accounts.map((acc, i) => {
+        const searchTerm = (DOM.searchScheduleInput?.value || '').toLowerCase().trim();
+        const filteredAccounts = accounts.filter(a => {
+            if (!searchTerm) return true;
+            return (
+                (a.nombre && a.nombre.toLowerCase().includes(searchTerm)) ||
+                (a.dni && a.dni.toLowerCase().includes(searchTerm)) ||
+                (a.codigo && a.codigo.toLowerCase().includes(searchTerm))
+            );
+        });
+
+        if (filteredAccounts.length === 0) {
+            scheduleBody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-state-icon">🔍</div><div class="empty-state-text">No se encontraron cuentas</div></div></td></tr>`;
+            if (todayCount) todayCount.textContent = `Hoy: ${activeToday} cuentas activas`;
+            return;
+        }
+
+        scheduleBody.innerHTML = filteredAccounts.map((acc, i) => {
             const dias = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'];
             const isGloballyInactive = acc.active === false;
             const isActiveToday = dias.includes(todayDay) && !isGloballyInactive;
@@ -1192,6 +1214,12 @@
             state.accountsPage = 1; // Reset to first page on search
             renderAccounts();
         });
+
+        if (DOM.searchScheduleInput) {
+            DOM.searchScheduleInput.addEventListener('input', () => {
+                renderSchedule(state.accounts);
+            });
+        }
 
         if (DOM.groupFilterSelect) {
             DOM.groupFilterSelect.addEventListener('change', (e) => {
