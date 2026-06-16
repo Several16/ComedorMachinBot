@@ -532,7 +532,7 @@
             return `
                 <tr class="fade-in ${isActive ? '' : 'inactive-row'}" style="animation-delay: ${i * 0.03}s" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}">
                     <td>
-                        <input type="number" class="form-input order-input" value="${i + 1}" min="1" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" data-current-index="${i}" style="width: 50px; text-align: center; padding: 0.2rem; height: auto;">
+                        <input type="number" class="form-input order-input" value="${state.accounts.filter(acc => String(acc.chatId || 'any') === String(a.chatId || 'any')).findIndex(acc => String(acc.dni || acc.DNI) === String(dni)) + 1}" min="1" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" style="width: 50px; text-align: center; padding: 0.2rem; height: auto;">
                     </td>
                     <td>${escapeHtml(String(dni))}</td>
                     <td>${escapeHtml(String(code))}</td>
@@ -622,20 +622,21 @@
         DOM.accountsBody.querySelectorAll('.order-input').forEach(input => {
             const handleOrderChange = async function() {
                 const chatId = this.dataset.chatid;
-                const currentIdx = parseInt(this.dataset.currentIndex, 10);
+                const dni = this.dataset.dni;
+                
+                // Get all accounts for this user from the GLOBAL state
+                const userAccounts = state.accounts.filter(a => String(a.chatId || 'any') === String(chatId));
+                
+                const currentIdx = userAccounts.findIndex(a => String(a.dni || a.DNI) === String(dni));
                 const targetIdx = parseInt(this.value, 10) - 1; // Convert 1-based to 0-based
                 
-                // Get all rows for this user
-                const userRows = Array.from(DOM.accountsBody.querySelectorAll('.order-input'))
-                                      .filter(inp => inp.dataset.chatid === chatId);
-                
-                if (targetIdx === currentIdx || targetIdx < 0 || targetIdx >= userRows.length) {
+                if (targetIdx === currentIdx || targetIdx < 0 || targetIdx >= userAccounts.length) {
                     this.value = currentIdx + 1; // Revert to old value if invalid
                     return;
                 }
 
-                // Get current order of DNIS
-                let order = userRows.map(inp => inp.dataset.dni);
+                // Get current order of DNIS for this user
+                let order = userAccounts.map(a => String(a.dni || a.DNI));
                 
                 // Remove the item from current position
                 const [movedDni] = order.splice(currentIdx, 1);
