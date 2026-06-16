@@ -803,34 +803,54 @@ function startBot(chatId, config) {
       const rawMatch = line.match(/\[RAW_SUCCESS\] DNI: (\d+)/);
       if (rawMatch && telegramBotClient) {
         const dni = rawMatch[1].trim();
-        telegramBotClient.sendMessage(ownerChatId, `⚡ ¡Cupo asegurado (Modo Crudo)!\nDNI: ${dni}`).catch(()=>{});
+        let targetChatId = ownerChatId;
+        if (ownerChatId === "GLOBAL" && config.accounts) {
+          const acc = config.accounts.find(a => String(a.dni || a.DNI) === dni);
+          if (acc && acc.ownerChatId) targetChatId = acc.ownerChatId;
+        }
+        telegramBotClient.sendMessage(targetChatId, `⚡ ¡Cupo asegurado (Modo Crudo)!\nDNI: ${dni}`).catch(()=>{});
       }
       // ── Fallo RAW individual ──
       const rawFailMatch = line.match(/\[RAW_FAIL\] DNI: (\d+) \| ERROR: (.+)/);
       if (rawFailMatch && telegramBotClient) {
         const dni = rawFailMatch[1].trim();
         const reason = rawFailMatch[2].trim();
-        telegramBotClient.sendMessage(ownerChatId, `❌ Sin cupo (RAW)\nDNI: ${dni}\nRazón: ${reason}`).catch(()=>{});
+        let targetChatId = ownerChatId;
+        if (ownerChatId === "GLOBAL" && config.accounts) {
+          const acc = config.accounts.find(a => String(a.dni || a.DNI) === dni);
+          if (acc && acc.ownerChatId) targetChatId = acc.ownerChatId;
+        }
+        telegramBotClient.sendMessage(targetChatId, `❌ Sin cupo (RAW)\nDNI: ${dni}\nRazón: ${reason}`).catch(()=>{});
       }
       // ── Warm-up status ──
       const warmupOpen = line.match(/\[WARMUP\] .*API ABIERTA/);
       if (warmupOpen && telegramBotClient) {
-        telegramBotClient.sendMessage(ownerChatId, `🟢 API detectada ABIERTA. Lanzando ataque a todas las cuentas...`).catch(()=>{});
+        if (ownerChatId === "GLOBAL" && config.accounts) {
+          const uniqueChats = [...new Set(config.accounts.map(a => a.ownerChatId).filter(Boolean))];
+          uniqueChats.forEach(c => telegramBotClient.sendMessage(c, `🟢 API detectada ABIERTA. Lanzando ataque unificado a los workers...`).catch(()=>{}));
+        } else {
+          telegramBotClient.sendMessage(ownerChatId, `🟢 API detectada ABIERTA. Lanzando ataque a todas las cuentas...`).catch(()=>{});
+        }
       }
       // ── Resumen final de RAW con mensaje HONESTO ──
       const rawSummaryMatch = line.match(/Ejecución RAW finalizada\. Éxitos: (\d+)\/(\d+)/);
       if (rawSummaryMatch && telegramBotClient) {
         const successes = parseInt(rawSummaryMatch[1], 10);
         const total = parseInt(rawSummaryMatch[2], 10);
-        let msg;
-        if (successes > 0 && successes === total) {
-          msg = `🎯 *FASE 1 COMPLETADA (ATAQUE RAW)*\n✅ ¡PERFECTO! Se aseguraron *todos* los cupos: *${successes}/${total}*\n\n_La Fase 2 (Visual) arrancará en 20 min para recoger los QRs._`;
-        } else if (successes > 0) {
-          msg = `🎯 *FASE 1 COMPLETADA (ATAQUE RAW)*\n⚠️ Se aseguraron *${successes}/${total}* cupos.\n${total - successes} cuenta(s) no lograron cupo.\n\n_La Fase 2 (Visual) arrancará en 20 min para recoger los QRs._`;
+        if (ownerChatId === "GLOBAL" && config.accounts) {
+          const uniqueChats = [...new Set(config.accounts.map(a => a.ownerChatId).filter(Boolean))];
+          uniqueChats.forEach(c => telegramBotClient.sendMessage(c, `🎯 *FASE 1 COMPLETADA (COLA UNIFICADA)*\nSe procesaron las cuentas.\n_La Fase 2 (Visual) arrancará en 20 min._`, {parse_mode:"Markdown"}).catch(()=>{}));
         } else {
-          msg = `⚠️ *FASE 1 FINALIZADA (ATAQUE RAW)*\n❌ *0/${total}* cupos asegurados.\nLa API pudo haber estado saturada o no respondió a tiempo.\n\n_La Fase 2 (Visual) intentará obtener cupos en 20 min._`;
+          let msg;
+          if (successes > 0 && successes === total) {
+            msg = `🎯 *FASE 1 COMPLETADA (ATAQUE RAW)*\n✅ ¡PERFECTO! Se aseguraron *todos* los cupos: *${successes}/${total}*\n\n_La Fase 2 (Visual) arrancará en 20 min para recoger los QRs._`;
+          } else if (successes > 0) {
+            msg = `🎯 *FASE 1 COMPLETADA (ATAQUE RAW)*\n⚠️ Se aseguraron *${successes}/${total}* cupos.\n${total - successes} cuenta(s) no lograron cupo.\n\n_La Fase 2 (Visual) arrancará en 20 min para recoger los QRs._`;
+          } else {
+            msg = `⚠️ *FASE 1 FINALIZADA (ATAQUE RAW)*\n❌ *0/${total}* cupos asegurados.\nLa API pudo haber estado saturada o no respondió a tiempo.\n\n_La Fase 2 (Visual) intentará obtener cupos en 20 min._`;
+          }
+          telegramBotClient.sendMessage(ownerChatId, msg, {parse_mode: "Markdown"}).catch(()=>{});
         }
-        telegramBotClient.sendMessage(ownerChatId, msg, {parse_mode: "Markdown"}).catch(()=>{});
       }
     }
   });
@@ -902,204 +922,102 @@ async function stopJobs(chatId, stopAll = false) {
 }
 
 const userCronJobs = new Map();
+let unifiedCronJob = null;
 
-function getAutoMenuPayload(chatId) {
-  const user = ensureUserAutoRun(chatId);
-  const auto = user.autoRun;
-  const startAt = subtractMinutesFromTime(auto.time, AUTO_PRESTART_MINUTES) || "-";
-  const credentialsOk = hasAutoCredentials(auto);
-  const txt = [
-    "⚙️ *Tarea Automática (Diaria)*",
-    "───────────────",
-    `*Estado:* ${auto.enabled ? "✅ Habilitada" : "❌ Deshabilitada"}`,
-    `*Hora objetivo:* ${auto.time}`,
-    `*Inicio real:* ${startAt} (Lima)`,
-    `*Próxima ejecución:* ${auto.enabled ? nextAutoRunLabel(auto.time) : "-"}`,
-    `*Cuentas registradas:* ${Array.isArray(auto.accounts) ? auto.accounts.length : 0} cuenta(s)`, // Cambiado de Credenciales
-    `*Estrategia:* 🚀 Híbrido (Crudo + Foto)`,
-    `*Modo:* ${auto.turboMode ? "⚡ TURBO" : "🐢 NORMAL"}`,
-    "",
-    "Selecciona una acción:",
-  ].join("\n");
-  const opts = {
-    parse_mode: "Markdown",
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: auto.enabled ? "❌ Deshabilitar" : "✅ Habilitar", callback_data: auto.enabled ? "cron_disable" : "cron_enable" },
-          { text: "▶️ Probar ahora", callback_data: "cron_run_now" },
-        ],
-        [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }, { text: "➕ Añadir Cuenta", callback_data: "cron_credentials" }],
-        [{ text: "📋 Ver / Borrar Cuentas", callback_data: "cron_manage_accounts" }],
-        [{ text: `⚡ Modo: ${auto.turboMode ? "TURBO" : "NORMAL"}`, callback_data: "cron_mode" }],
-      ],
-    },
-  };
-  return { txt, opts };
-}
+function startUnifiedCronLoop() {
+  if (unifiedCronJob) unifiedCronJob.stop();
 
-async function renderAutoMenu(bot, chatId, messageId) {
-  const { txt, opts } = getAutoMenuPayload(chatId);
-  if (messageId) {
-    try {
-      await bot.editMessageText(txt, { chat_id: chatId, message_id: messageId, ...opts });
-      return;
-    } catch {}
-  }
-  await bot.sendMessage(chatId, txt, opts);
-}
+  unifiedCronJob = cron.schedule('* * * * *', () => {
+    const limaDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+    const hh = String(limaDate.getHours()).padStart(2, '0');
+    const mm = String(limaDate.getMinutes()).padStart(2, '0');
+    const currentLimaTime = `${hh}:${mm}`;
+    const todayDay = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'][limaDate.getDay()];
 
-function setupUserCron(chatId) {
-  const id = String(chatId);
-  const existingJob = userCronJobs.get(id);
-  if (existingJob) {
-    existingJob.stop();
-    userCronJobs.delete(id);
-  }
+    let unifiedRawAccounts = [];
+    let unifiedVisualAccounts = [];
 
-  const u = ensureUserAutoRun(id);
-  if (!u || !u.autoRun || !u.autoRun.enabled || !u.autoRun.time) return;
-
-  if (!hasActiveLicense(id)) return;
-
-  const time = u.autoRun.time;
-  const startTime = subtractMinutesFromTime(time, AUTO_PRESTART_MINUTES);
-  if (!startTime) return;
-  const [hh, mm] = startTime.split(":");
-
-  const job = cron.schedule(`${mm} ${hh} * * *`, () => {
-    if (!hasActiveLicense(id)) {
-      job.stop();
-      userCronJobs.delete(id);
-      return;
-    }
-
-    if (!hasAutoCredentials(u.autoRun)) {
-      if (telegramBotClient) {
-        telegramBotClient
-          .sendMessage(
-            id,
-            "⏰ No se ejecutó tu tarea automática porque faltan credenciales.\nUsa ⏰ Auto -> ➕ Añadir Cuenta para registrar al menos una cuenta."
-          )
-          .catch(() => {});
+    for (const [id, user] of Object.entries(licenses.users)) {
+      if (!user.autoRun || !user.autoRun.enabled || !user.autoRun.time) continue;
+      if (!hasActiveLicense(id)) continue;
+      
+      const startTime = subtractMinutesFromTime(user.autoRun.time, AUTO_PRESTART_MINUTES);
+      if (startTime !== currentLimaTime) continue;
+      
+      if (!hasAutoCredentials(user.autoRun)) {
+        if (telegramBotClient) telegramBotClient.sendMessage(id, "⏰ No se ejecutó tu tarea automática porque faltan credenciales.").catch(()=>{});
+        continue;
       }
-      return;
-    }
-
-    const launch = async () => {
-      let accountsToRun = Array.isArray(u.autoRun.accounts) ? u.autoRun.accounts : [];
-      if (accountsToRun.length === 0 && u.autoRun.dni && u.autoRun.codigo) {
-        accountsToRun = [{ dni: u.autoRun.dni, codigo: u.autoRun.codigo }];
-      }
-
-      // Filtrar por día de la semana (Lima timezone)
-      const dayNames = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'];
-      const limaDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
-      const todayDay = dayNames[limaDate.getDay()];
+      
+      let accountsToRun = Array.isArray(user.autoRun.accounts) ? user.autoRun.accounts : [];
+      if (accountsToRun.length === 0 && user.autoRun.dni && user.autoRun.codigo) accountsToRun = [{ dni: user.autoRun.dni, codigo: user.autoRun.codigo }];
+      
       const totalBefore = accountsToRun.length;
-      accountsToRun = accountsToRun.filter(acc => {
-        // Si no tiene campo 'dias', incluir siempre (backwards compatible)
-        if (!acc.dias || !Array.isArray(acc.dias)) return true;
-        return acc.dias.includes(todayDay);
-      });
+      accountsToRun = accountsToRun.filter(acc => !acc.dias || !Array.isArray(acc.dias) || acc.dias.includes(todayDay));
       const skipped = totalBefore - accountsToRun.length;
+      if (accountsToRun.length === 0) continue;
       
-      const turboModeFlag = u.autoRun.turboMode !== false;
-      
-      const isHybrid = u.autoRun.execMode === 'raw_hybrid';
+      const isHybrid = user.autoRun.execMode === 'raw_hybrid';
+      const turboModeFlag = user.autoRun.turboMode !== false;
       
       if (telegramBotClient) {
-        const skipMsg = skipped > 0 ? ` (${skipped} omitidas por horario)` : '';
-        telegramBotClient
-          .sendMessage(
-            id,
-            `⏰ Auto iniciado. Cuentas: ${accountsToRun.length}${skipMsg}. Día: ${todayDay.toUpperCase()}. Estrategia: ${isHybrid ? '🚀 Híbrido' : '🎭 Playwright'}. Hora: ${u.autoRun.time} | inicio real: ${startTime} (Lima).`
-          )
-          .catch(() => {});
-      }
-
-      if (isHybrid) {
-        // Decidir si usar modo distribuido o local
-        const useDistributed = DISTRIBUTED_MODE && getWorkerUrls().length > 0;
-        
-        if (telegramBotClient) {
-          const modeLabel = useDistributed ? '(DISTRIBUIDO)' : '(LOCAL)';
-          telegramBotClient.sendMessage(id, `⏳ Fase 1 (RAW) ${modeLabel} iniciada. Sondeando API hasta que abra... El resultado se notificará al terminar.`).catch(() => {});
-        }
-
-        let resultRawPromise;
-        if (useDistributed) {
-          resultRawPromise = startDistributedBot(id, {
-            accounts: accountsToRun,
-            turboMode: turboModeFlag,
-            waveSize: 4,
-            waveDelayMs: 500,
-            maxPostAttempts: 150,
-            retryDelayMs: 250,
-          });
-        } else {
-          resultRawPromise = Promise.resolve(startBot(id, {
-            accounts: accountsToRun,
-            turboMode: turboModeFlag,
-            execMode: 'raw',
-            maxAttempts: DEFAULTS.maxAttempts,
-            retryDelayMs: DEFAULTS.retryDelayMs,
-          }));
-        }
-
-        resultRawPromise.then(resultRaw => {
-          if (!resultRaw.started && telegramBotClient && resultRaw.reason) {
-            telegramBotClient.sendMessage(id, `❌ Falló fase cruda: ${resultRaw.reason}`).catch(() => {});
-          }
-        }).catch(err => {
-          if (telegramBotClient) telegramBotClient.sendMessage(id, `❌ Error en fase cruda: ${err.message}`).catch(() => {});
-        });
-        
-        setTimeout(() => {
-          if (telegramBotClient) {
-            telegramBotClient.sendMessage(id, "📸 Iniciando Fase 2 (Visual): Recolección diferida de QRs...").catch(() => {});
-          }
-          startBot(id, {
-            accounts: accountsToRun,
-            turboMode: turboModeFlag,
-            execMode: 'visual',
-            maxAttempts: DEFAULTS.maxAttempts,
-            retryDelayMs: DEFAULTS.retryDelayMs,
-          });
-        }, 20 * 60 * 1000); // 20 minutos
-      } else {
-        const result = startBot(id, {
-          accounts: accountsToRun,
-          turboMode: turboModeFlag,
-          execMode: 'visual',
-          maxAttempts: DEFAULTS.maxAttempts,
-          retryDelayMs: DEFAULTS.retryDelayMs,
-        });
-
-        if (!result.started && telegramBotClient) {
-          telegramBotClient.sendMessage(id, `❌ Falló el inicio auto en bloque: ${result.reason}`).catch(() => {});
+        const skipMsg = skipped > 0 ? ` (${skipped} omitidas)` : '';
+        telegramBotClient.sendMessage(id, `⏰ Auto iniciado. Cuentas: ${accountsToRun.length}${skipMsg}. Día: ${todayDay.toUpperCase()}. Estrategia: ${isHybrid ? '🚀 Híbrido' : '🎭 Playwright'}. Hora: ${user.autoRun.time} | inicio real: ${startTime} (Lima).`).catch(()=>{});
+        if (isHybrid && DISTRIBUTED_MODE && getWorkerUrls().length > 0) {
+          telegramBotClient.sendMessage(id, `⏳ Fase 1 (RAW) (DISTRIBUIDO). Se ha entrado en la COLA UNIFICADA para prevenir bloqueos de Base de Datos. Esperando apertura de API...`).catch(() => {});
         }
       }
-    };
 
-    if (AUTO_START_JITTER_MAX_MS > 0) {
-      const delay = Math.floor(Math.random() * (AUTO_START_JITTER_MAX_MS + 1));
-      setTimeout(launch, delay);
-    } else {
-      launch();
+      const taggedAccounts = accountsToRun.map(a => ({ ...a, ownerChatId: id }));
+      if (isHybrid) unifiedRawAccounts.push(...taggedAccounts);
+      unifiedVisualAccounts.push({ chatId: id, accounts: accountsToRun, turboMode: turboModeFlag, isHybrid });
     }
-  }, {
-    scheduled: true,
-    timezone: "America/Lima"
-  });
 
-  userCronJobs.set(id, job);
+    // 1. Ejecutar Fase 1 Unificada
+    if (unifiedRawAccounts.length > 0) {
+      const useDistributed = DISTRIBUTED_MODE && getWorkerUrls().length > 0;
+      if (useDistributed) {
+        console.log(`[UNIFIED_CRON] Lanzando Cola Unificada Distribuida con ${unifiedRawAccounts.length} cuentas combinadas.`);
+        const resultRawPromise = startDistributedBot("GLOBAL", {
+          accounts: unifiedRawAccounts,
+          turboMode: true,
+          waveSize: 4,
+          waveDelayMs: 500,
+          maxPostAttempts: 150,
+          retryDelayMs: 250,
+        });
+        resultRawPromise.then(res => {
+          if (!res.started) unifiedVisualAccounts.filter(uv => uv.isHybrid).forEach(uv => telegramBotClient.sendMessage(uv.chatId, `❌ Falló fase unificada: ${res.reason}`).catch(()=>{}));
+        }).catch(err => {
+          unifiedVisualAccounts.filter(uv => uv.isHybrid).forEach(uv => telegramBotClient.sendMessage(uv.chatId, `❌ Error en fase unificada: ${err.message}`).catch(()=>{}));
+        });
+      } else {
+        // Fallback local: secuencial
+        unifiedVisualAccounts.filter(uv => uv.isHybrid).forEach(uv => {
+          startBot(uv.chatId, { accounts: uv.accounts, turboMode: uv.turboMode, execMode: 'raw', maxAttempts: DEFAULTS.maxAttempts, retryDelayMs: DEFAULTS.retryDelayMs });
+        });
+      }
+    }
+
+    // 2. Ejecutar Fase 2 (Secuencial por usuario para aislar procesos)
+    if (unifiedVisualAccounts.length > 0) {
+      unifiedVisualAccounts.forEach(uv => {
+        if (uv.isHybrid) {
+          setTimeout(() => {
+            if (telegramBotClient) telegramBotClient.sendMessage(uv.chatId, "📸 Iniciando Fase 2 (Visual): Recolección diferida de QRs...").catch(() => {});
+            startBot(uv.chatId, { accounts: uv.accounts, turboMode: uv.turboMode, execMode: 'visual', maxAttempts: DEFAULTS.maxAttempts, retryDelayMs: DEFAULTS.retryDelayMs });
+          }, 20 * 60 * 1000);
+        } else {
+          startBot(uv.chatId, { accounts: uv.accounts, turboMode: uv.turboMode, execMode: 'visual', maxAttempts: DEFAULTS.maxAttempts, retryDelayMs: DEFAULTS.retryDelayMs });
+        }
+      });
+    }
+
+  }, { scheduled: true, timezone: "America/Lima" });
 }
 
 function initializeAllCrons() {
-  for (const id of Object.keys(licenses.users)) {
-    setupUserCron(id);
-  }
+  startUnifiedCronLoop();
 }
 
 async function notifyLicenseExpirations() {
