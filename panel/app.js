@@ -369,8 +369,14 @@
 
             let resultHtml = '';
             if (lastResult) {
-                const resultClass = lastResult.success ? 'success' : (lastResult.error ? 'error' : 'idle');
-                const resultText = lastResult.message || lastResult.status || (lastResult.success ? 'Éxito' : 'Error');
+                let resultClass, resultText;
+                if (typeof lastResult.successes !== 'undefined') {
+                    resultClass = lastResult.successes === lastResult.total ? 'success' : (lastResult.successes > 0 ? 'warning' : 'error');
+                    resultText = `${lastResult.successes}/${lastResult.total} Éxitos`;
+                } else {
+                    resultClass = lastResult.success ? 'success' : (lastResult.error ? 'error' : 'idle');
+                    resultText = lastResult.message || lastResult.status || (lastResult.success ? 'Éxito' : 'Error');
+                }
                 resultHtml = `<div class="worker-result ${resultClass}">${escapeHtml(resultText)}</div>`;
             } else {
                 resultHtml = `<div class="worker-result idle">Sin ejecuciones</div>`;
