@@ -532,7 +532,7 @@
             return `
                 <tr class="fade-in ${isActive ? '' : 'inactive-row'}" style="animation-delay: ${i * 0.03}s" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}">
                     <td>
-                        <input type="number" class="form-input order-input" value="${state.accounts.filter(acc => String(acc.chatId || 'any') === String(a.chatId || 'any')).findIndex(acc => String(acc.dni || acc.DNI) === String(dni)) + 1}" min="1" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" style="width: 50px; text-align: center; padding: 0.2rem; height: auto;">
+                        <input type="number" class="form-input order-input" value="${state.accounts.findIndex(acc => String(acc.dni || acc.DNI) === String(dni)) + 1}" min="1" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" style="width: 50px; text-align: center; padding: 0.2rem; height: auto;" title="Posición global">
                     </td>
                     <td>${escapeHtml(String(dni))}</td>
                     <td>${escapeHtml(String(code))}</td>
@@ -624,24 +624,34 @@
                 const chatId = this.dataset.chatid;
                 const dni = this.dataset.dni;
                 
-                // Get all accounts for this user from the GLOBAL state
-                const userAccounts = state.accounts.filter(a => String(a.chatId || 'any') === String(chatId));
+                // Absolute global indices
+                const currentGlobalIdx = state.accounts.findIndex(a => String(a.dni || a.DNI) === String(dni));
+                const targetGlobalIdx = parseInt(this.value, 10) - 1; // 0-based
                 
-                const currentIdx = userAccounts.findIndex(a => String(a.dni || a.DNI) === String(dni));
-                const targetIdx = parseInt(this.value, 10) - 1; // Convert 1-based to 0-based
-                
-                if (targetIdx === currentIdx || targetIdx < 0 || targetIdx >= userAccounts.length) {
-                    this.value = currentIdx + 1; // Revert to old value if invalid
+                if (targetGlobalIdx === currentGlobalIdx || targetGlobalIdx < 0 || targetGlobalIdx >= state.accounts.length) {
+                    this.value = currentGlobalIdx + 1; // Revert
                     return;
                 }
+
+                // Check if target global position belongs to the SAME chatId
+                const targetAccount = state.accounts[targetGlobalIdx];
+                if (String(targetAccount.chatId || 'any') !== String(chatId)) {
+                    toast('error', 'Movimiento inválido', 'No puedes mezclar cuentas entre diferentes usuarios. Mantén el orden dentro del bloque de tu propio usuario.');
+                    this.value = currentGlobalIdx + 1; // Revert
+                    return;
+                }
+                
+                // Get local arrays for this user
+                const userAccounts = state.accounts.filter(a => String(a.chatId || 'any') === String(chatId));
+                const currentLocalIdx = userAccounts.findIndex(a => String(a.dni || a.DNI) === String(dni));
+                const targetLocalIdx = userAccounts.findIndex(a => String(a.dni || a.DNI) === String(targetAccount.dni || targetAccount.DNI));
 
                 // Get current order of DNIS for this user
                 let order = userAccounts.map(a => String(a.dni || a.DNI));
                 
-                // Remove the item from current position
-                const [movedDni] = order.splice(currentIdx, 1);
-                // Insert at new position
-                order.splice(targetIdx, 0, movedDni);
+                // Perform local swap/move
+                const [movedDni] = order.splice(currentLocalIdx, 1);
+                order.splice(targetLocalIdx, 0, movedDni);
 
                 try {
                     const { ok, data } = await api('POST', '/api/dashboard/accounts/reorder', { chatId, order });
