@@ -972,91 +972,94 @@ function startUnifiedCronLoop() {
   if (unifiedCronJob) unifiedCronJob.stop();
 
   unifiedCronJob = cron.schedule('* * * * *', () => {
-    const limaDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
-    const hh = String(limaDate.getHours()).padStart(2, '0');
-    const mm = String(limaDate.getMinutes()).padStart(2, '0');
-    const currentLimaTime = `${hh}:${mm}`;
-    const todayDay = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'][limaDate.getDay()];
+    try {
+      const limaDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+      const hh = String(limaDate.getHours()).padStart(2, '0');
+      const mm = String(limaDate.getMinutes()).padStart(2, '0');
+      const currentLimaTime = `${hh}:${mm}`;
+      const todayDay = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'][limaDate.getDay()];
 
-    let unifiedRawAccounts = [];
-    let unifiedVisualAccounts = [];
+      let unifiedRawAccounts = [];
+      let unifiedVisualAccounts = [];
 
-    for (const [id, user] of Object.entries(licenses.users)) {
-      if (!user.autoRun || !user.autoRun.enabled || !user.autoRun.time) continue;
-      if (!hasActiveLicense(id)) continue;
-      
-      const startTime = subtractMinutesFromTime(user.autoRun.time, AUTO_PRESTART_MINUTES);
-      if (startTime !== currentLimaTime) continue;
-      
-      if (!hasAutoCredentials(user.autoRun)) {
-        if (telegramBotClient) telegramBotClient.sendMessage(id, "⏰ No se ejecutó tu tarea automática porque faltan credenciales.").catch(()=>{});
-        continue;
-      }
-      
-      let accountsToRun = Array.isArray(user.autoRun.accounts) ? user.autoRun.accounts : [];
-      if (accountsToRun.length === 0 && user.autoRun.dni && user.autoRun.codigo) accountsToRun = [{ dni: user.autoRun.dni, codigo: user.autoRun.codigo }];
-      
-      const totalBefore = accountsToRun.length;
-      accountsToRun = accountsToRun.filter(acc => !acc.dias || !Array.isArray(acc.dias) || acc.dias.includes(todayDay));
-      const skipped = totalBefore - accountsToRun.length;
-      if (accountsToRun.length === 0) continue;
-      
-      const isHybrid = user.autoRun.execMode === 'raw_hybrid';
-      const turboModeFlag = user.autoRun.turboMode !== false;
-      
-      if (telegramBotClient) {
-        const skipMsg = skipped > 0 ? ` (${skipped} omitidas)` : '';
-        telegramBotClient.sendMessage(id, `⏰ Auto iniciado. Cuentas: ${accountsToRun.length}${skipMsg}. Día: ${todayDay.toUpperCase()}. Estrategia: ${isHybrid ? '🚀 Híbrido' : '🎭 Playwright'}. Hora: ${user.autoRun.time} | inicio real: ${startTime} (Lima).`).catch(()=>{});
-        if (isHybrid && DISTRIBUTED_MODE && getWorkerUrls().length > 0) {
-          telegramBotClient.sendMessage(id, `⏳ Fase 1 (RAW) (DISTRIBUIDO). Se ha entrado en la COLA UNIFICADA para prevenir bloqueos de Base de Datos. Esperando apertura de API...`).catch(() => {});
+      for (const [id, user] of Object.entries(licenses.users)) {
+        if (!user.autoRun || !user.autoRun.enabled || !user.autoRun.time) continue;
+        if (!hasActiveLicense(id)) continue;
+        
+        const startTime = subtractMinutesFromTime(user.autoRun.time, AUTO_PRESTART_MINUTES);
+        if (startTime !== currentLimaTime) continue;
+        
+        if (!hasAutoCredentials(user.autoRun)) {
+          if (telegramBotClient) telegramBotClient.sendMessage(id, "⏰ No se ejecutó tu tarea automática porque faltan credenciales.").catch(()=>{});
+          continue;
         }
+        
+        let accountsToRun = Array.isArray(user.autoRun.accounts) ? user.autoRun.accounts : [];
+        if (accountsToRun.length === 0 && user.autoRun.dni && user.autoRun.codigo) accountsToRun = [{ dni: user.autoRun.dni, codigo: user.autoRun.codigo }];
+        
+        const totalBefore = accountsToRun.length;
+        accountsToRun = accountsToRun.filter(acc => !acc.dias || !Array.isArray(acc.dias) || acc.dias.includes(todayDay));
+        const skipped = totalBefore - accountsToRun.length;
+        if (accountsToRun.length === 0) continue;
+        
+        const isHybrid = user.autoRun.execMode === 'raw_hybrid';
+        const turboModeFlag = user.autoRun.turboMode !== false;
+        
+        if (telegramBotClient) {
+          const skipMsg = skipped > 0 ? ` (${skipped} omitidas)` : '';
+          telegramBotClient.sendMessage(id, `⏰ Auto iniciado. Cuentas: ${accountsToRun.length}${skipMsg}. Día: ${todayDay.toUpperCase()}. Estrategia: ${isHybrid ? '🚀 Híbrido' : '🎭 Playwright'}. Hora: ${user.autoRun.time} | inicio real: ${startTime} (Lima).`).catch(()=>{});
+          if (isHybrid && DISTRIBUTED_MODE && getWorkerUrls().length > 0) {
+            telegramBotClient.sendMessage(id, `⏳ Fase 1 (RAW) (DISTRIBUIDO). Se ha entrado en la COLA UNIFICADA para prevenir bloqueos de Base de Datos. Esperando apertura de API...`).catch(() => {});
+          }
+        }
+
+        const taggedAccounts = accountsToRun.map(a => ({ ...a, ownerChatId: id }));
+        if (isHybrid) unifiedRawAccounts.push(...taggedAccounts);
+        unifiedVisualAccounts.push({ chatId: id, accounts: accountsToRun, turboMode: turboModeFlag, isHybrid });
       }
 
-      const taggedAccounts = accountsToRun.map(a => ({ ...a, ownerChatId: id }));
-      if (isHybrid) unifiedRawAccounts.push(...taggedAccounts);
-      unifiedVisualAccounts.push({ chatId: id, accounts: accountsToRun, turboMode: turboModeFlag, isHybrid });
-    }
-
-    // 1. Ejecutar Fase 1 Unificada
-    if (unifiedRawAccounts.length > 0) {
-      const useDistributed = DISTRIBUTED_MODE && getWorkerUrls().length > 0;
-      if (useDistributed) {
-        console.log(`[UNIFIED_CRON] Lanzando Cola Unificada Distribuida con ${unifiedRawAccounts.length} cuentas combinadas.`);
-        const resultRawPromise = startDistributedBot("GLOBAL", {
-          accounts: unifiedRawAccounts,
-          turboMode: true,
-          waveSize: 4,
-          waveDelayMs: 500,
-          maxPostAttempts: 150,
-          retryDelayMs: 250,
-        });
-        resultRawPromise.then(res => {
-          if (!res.started) unifiedVisualAccounts.filter(uv => uv.isHybrid).forEach(uv => telegramBotClient.sendMessage(uv.chatId, `❌ Falló fase unificada: ${res.reason}`).catch(()=>{}));
-        }).catch(err => {
-          unifiedVisualAccounts.filter(uv => uv.isHybrid).forEach(uv => telegramBotClient.sendMessage(uv.chatId, `❌ Error en fase unificada: ${err.message}`).catch(()=>{}));
-        });
-      } else {
-        // Fallback local: secuencial
-        unifiedVisualAccounts.filter(uv => uv.isHybrid).forEach(uv => {
-          startBot(uv.chatId, { accounts: uv.accounts, turboMode: uv.turboMode, execMode: 'raw', maxAttempts: DEFAULTS.maxAttempts, retryDelayMs: DEFAULTS.retryDelayMs });
-        });
-      }
-    }
-
-    // 2. Ejecutar Fase 2 (Secuencial por usuario para aislar procesos)
-    if (unifiedVisualAccounts.length > 0) {
-      unifiedVisualAccounts.forEach(uv => {
-        if (uv.isHybrid) {
-          setTimeout(() => {
-            if (telegramBotClient) telegramBotClient.sendMessage(uv.chatId, "📸 Iniciando Fase 2 (Visual): Recolección diferida de QRs...").catch(() => {});
-            startBot(uv.chatId, { accounts: uv.accounts, turboMode: uv.turboMode, execMode: 'visual', maxAttempts: DEFAULTS.maxAttempts, retryDelayMs: DEFAULTS.retryDelayMs });
-          }, 20 * 60 * 1000);
+      // 1. Ejecutar Fase 1 Unificada
+      if (unifiedRawAccounts.length > 0) {
+        const useDistributed = DISTRIBUTED_MODE && getWorkerUrls().length > 0;
+        if (useDistributed) {
+          console.log(`[UNIFIED_CRON] Lanzando Cola Unificada Distribuida con ${unifiedRawAccounts.length} cuentas combinadas.`);
+          const resultRawPromise = startDistributedBot("GLOBAL", {
+            accounts: unifiedRawAccounts,
+            turboMode: true,
+            waveSize: 4,
+            waveDelayMs: 500,
+            maxPostAttempts: 150,
+            retryDelayMs: 250,
+          });
+          resultRawPromise.then(res => {
+            if (!res.started) unifiedVisualAccounts.filter(uv => uv.isHybrid).forEach(uv => telegramBotClient.sendMessage(uv.chatId, `❌ Falló fase unificada: ${res.reason}`).catch(()=>{}));
+          }).catch(err => {
+            unifiedVisualAccounts.filter(uv => uv.isHybrid).forEach(uv => telegramBotClient.sendMessage(uv.chatId, `❌ Error en fase unificada: ${err.message}`).catch(()=>{}));
+          });
         } else {
-          startBot(uv.chatId, { accounts: uv.accounts, turboMode: uv.turboMode, execMode: 'visual', maxAttempts: DEFAULTS.maxAttempts, retryDelayMs: DEFAULTS.retryDelayMs });
+          // Fallback local: secuencial
+          unifiedVisualAccounts.filter(uv => uv.isHybrid).forEach(uv => {
+            startBot(uv.chatId, { accounts: uv.accounts, turboMode: uv.turboMode, execMode: 'raw', maxAttempts: DEFAULTS.maxAttempts, retryDelayMs: DEFAULTS.retryDelayMs });
+          });
         }
-      });
-    }
+      }
 
+      // 2. Ejecutar Fase 2 (Secuencial por usuario para aislar procesos)
+      if (unifiedVisualAccounts.length > 0) {
+        unifiedVisualAccounts.forEach(uv => {
+          if (uv.isHybrid) {
+            setTimeout(() => {
+              if (telegramBotClient) telegramBotClient.sendMessage(uv.chatId, "📸 Iniciando Fase 2 (Visual): Recolección diferida de QRs...").catch(() => {});
+              startBot(uv.chatId, { accounts: uv.accounts, turboMode: uv.turboMode, execMode: 'visual', maxAttempts: DEFAULTS.maxAttempts, retryDelayMs: DEFAULTS.retryDelayMs });
+            }, 20 * 60 * 1000);
+          } else {
+            startBot(uv.chatId, { accounts: uv.accounts, turboMode: uv.turboMode, execMode: 'visual', maxAttempts: DEFAULTS.maxAttempts, retryDelayMs: DEFAULTS.retryDelayMs });
+          }
+        });
+      }
+    } catch (err) {
+      console.error(`[UNIFIED_CRON] Error grave en el loop principal:`, err);
+    }
   }, { scheduled: true, timezone: "America/Lima" });
 }
 
