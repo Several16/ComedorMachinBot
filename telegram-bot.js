@@ -554,15 +554,22 @@ async function notifyJobFinished(exitInfo) {
   try {
     const artifacts = extractLastArtifactPaths(logPath);
     const preferredImage = artifacts.qrPath || artifacts.fullPath;
-    if (preferredImage) {
-      await telegramBotClient.sendPhoto(chatId, fs.createReadStream(preferredImage), {
-        caption: `${isBatch ? 'Batch (Múltiples Cuentas)' : 'DNI: ' + (exitInfo.dni || "Desconocido")}\n${label}\nJob: ${jobId}\nPID: ${pid}`,
+    
+    const targetChats = chatId === "GLOBAL" && exitInfo.accounts 
+      ? [...new Set(exitInfo.accounts.map(a => a.ownerChatId).filter(Boolean))]
+      : [chatId];
+
+    for (const tChat of targetChats) {
+      if (preferredImage) {
+        await telegramBotClient.sendPhoto(tChat, fs.createReadStream(preferredImage), {
+          caption: `${isBatch ? 'Batch (Múltiples Cuentas)' : 'DNI: ' + (exitInfo.dni || "Desconocido")}\n${label}\nJob: ${jobId}\nPID: ${pid}`,
+        });
+      }
+      await telegramBotClient.sendMessage(tChat, lines.join("\n"), {
+        parse_mode: "Markdown",
+        reply_markup: userKeyboard(isAdmin(tChat)),
       });
     }
-    await telegramBotClient.sendMessage(chatId, lines.join("\n"), {
-      parse_mode: "Markdown",
-      reply_markup: userKeyboard(isAdmin(chatId)),
-    });
   } catch (error) {
     console.error(`No se pudo notificar cierre de job ${jobId}:`, error.message);
   }
@@ -681,7 +688,11 @@ async function startDistributedBot(chatId, config) {
       } else {
         msg = `⚠️ *FASE 1 FINALIZADA (DISTRIBUIDO)*\n❌ *0/${total}* cupos asegurados.\n🌐 Workers: ${result.totalWorkers}\n\n${detailsText}`;
       }
-      telegramBotClient.sendMessage(ownerChatId, msg, {parse_mode: "Markdown"}).catch(()=>{});
+      const targetChats = ownerChatId === "GLOBAL" && config.accounts 
+        ? [...new Set(config.accounts.map(a => a.ownerChatId).filter(Boolean))]
+        : [ownerChatId];
+      
+      targetChats.forEach(c => telegramBotClient.sendMessage(c, msg, {parse_mode: "Markdown"}).catch(()=>{}));
     }
 
     // Finalizar job
@@ -692,7 +703,7 @@ async function startDistributedBot(chatId, config) {
     if (!listRunningJobs(ownerChatId).length) {
       stopLoadingIndicator(ownerChatId);
     }
-    const exitInfo = { jobId, chatId: ownerChatId, pid: process.pid, code: exitCode, at: nowIso(), logPath, dni: "" };
+    const exitInfo = { jobId, chatId: ownerChatId, pid: process.pid, code: exitCode, at: nowIso(), logPath, dni: "", accounts: config.accounts };
     pushRecentExit(exitInfo);
     await notifyJobFinished(exitInfo);
 
@@ -870,6 +881,7 @@ function startBot(chatId, config) {
       at: nowIso(),
       logPath,
       dni: env.CHAROLA_DNI,
+      accounts: config.accounts
     };
     pushRecentExit(exitInfo);
     await notifyJobFinished(exitInfo);
