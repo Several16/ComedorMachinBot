@@ -162,7 +162,12 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
   const onlineUrls = onlineWorkers.map(w => w.url);
   const groups = distributeAccounts(accountsToDistribute, onlineUrls.length);
 
-  log(`[COORD] Distribución:`);
+  // Calcular waveSize dinámico: todas las cuentas en UNA sola oleada por worker
+  // Ejemplo: 29 cuentas / 4 workers = 8 por worker → waveSize=8 → todo en oleada 0 (0ms)
+  const maxGroupSize = Math.max(...groups.map(g => g.length));
+  const dynamicWaveSize = Math.max(maxGroupSize, config.waveSize || 4);
+  
+  log(`[COORD] Distribución (waveSize dinámico: ${dynamicWaveSize} → 1 sola oleada por worker):`);
   onlineUrls.forEach((url, i) => {
     const workerName = onlineWorkers[i].workerId || `worker-${i + 1}`;
     log(`[COORD]   ${workerName} (${url}): ${groups[i].length} cuentas`);
@@ -193,7 +198,7 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
           accounts: workerAccounts,
           config: {
             skipWarmup: true,
-            waveSize: config.waveSize || 4,
+            waveSize: dynamicWaveSize,
             waveDelayMs: config.waveDelayMs || 500,
             maxPostAttempts: config.maxPostAttempts || 150,
             retryDelayMs: config.retryDelayMs || 250,
