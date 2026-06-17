@@ -423,7 +423,15 @@ function generateJobId(chatId) {
 
 function listRunningJobs(chatId) {
   const allJobs = Array.from(runningJobs.values());
-  const filtered = chatId === undefined ? allJobs : allJobs.filter((job) => job.chatId === String(chatId));
+  if (chatId === undefined) return allJobs.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+  const filtered = allJobs.filter((job) => {
+    if (job.chatId === String(chatId)) return true;
+    // Jobs GLOBAL: mostrar si las cuentas del usuario están incluidas
+    if (job.chatId === "GLOBAL" && job.accounts) {
+      return job.accounts.some(a => String(a.ownerChatId) === String(chatId));
+    }
+    return false;
+  });
   return filtered.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
 }
 
@@ -622,7 +630,8 @@ async function startDistributedBot(chatId, config) {
     dni: "",
     codigo: "",
     process: null,
-    distributed: true
+    distributed: true,
+    accounts
   };
   runningJobs.set(jobId, distributedJob);
   startLoadingIndicator(ownerChatId);
@@ -673,26 +682,39 @@ async function startDistributedBot(chatId, config) {
     stream.write(`[RAW_RESUMEN] ═══════════════════════════════\n\n`);
     stream.write(`[${new Date().toLocaleString()}] Ejecución RAW finalizada. Éxitos: ${successes}/${total}\n`);
 
-    // Enviar resumen de Fase 1 por Telegram
+    // Enviar resumen de Fase 1 por Telegram — dividido por usuario
     if (telegramBotClient) {
-      const detailsText = result.results.map(r => {
-        const label = r.nombre ? `${r.nombre} (${r.dni})` : `DNI: ${r.dni}`;
-        return r.success ? `✅ ${label}` : `❌ ${label} - ${r.reason || 'Error desconocido'}`;
-      }).join('\n');
-
-      let msg;
-      if (successes > 0 && successes === total) {
-        msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n✅ ¡PERFECTO! Se aseguraron *todos* los cupos: *${successes}/${total}*\n🌐 Workers usados: ${result.totalWorkers}\n\n${detailsText}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
-      } else if (successes > 0) {
-        msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n⚠️ Se aseguraron *${successes}/${total}* cupos.\n🌐 Workers usados: ${result.totalWorkers}\n\n${detailsText}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
-      } else {
-        msg = `⚠️ *FASE 1 FINALIZADA (DISTRIBUIDO)*\n❌ *0/${total}* cupos asegurados.\n🌐 Workers: ${result.totalWorkers}\n\n${detailsText}`;
-      }
       const targetChats = ownerChatId === "GLOBAL" && config.accounts 
         ? [...new Set(config.accounts.map(a => a.ownerChatId).filter(Boolean))]
         : [ownerChatId];
-      
-      targetChats.forEach(c => telegramBotClient.sendMessage(c, msg, {parse_mode: "Markdown"}).catch(()=>{}));
+
+      for (const tChat of targetChats) {
+        // Filtrar solo las cuentas de ESTE usuario
+        const userResults = ownerChatId === "GLOBAL"
+          ? result.results.filter(r => {
+              const acc = config.accounts.find(a => String(a.dni) === String(r.dni));
+              return acc && String(acc.ownerChatId) === String(tChat);
+            })
+          : result.results;
+
+        const userSuccesses = userResults.filter(r => r.success).length;
+        const userTotal = userResults.length;
+
+        const detailsText = userResults.map(r => {
+          const label = r.nombre ? `${r.nombre} (${r.dni})` : `DNI: ${r.dni}`;
+          return r.success ? `✅ ${label}` : `❌ ${label} - ${r.reason || 'Error desconocido'}`;
+        }).join('\n');
+
+        let msg;
+        if (userSuccesses > 0 && userSuccesses === userTotal) {
+          msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n✅ ¡PERFECTO! Se aseguraron *todos* los cupos: *${userSuccesses}/${userTotal}*\n🌐 Workers usados: ${result.totalWorkers}\n\n${detailsText}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
+        } else if (userSuccesses > 0) {
+          msg = `🎯 *FASE 1 COMPLETADA (DISTRIBUIDO)*\n⚠️ Se aseguraron *${userSuccesses}/${userTotal}* cupos.\n🌐 Workers usados: ${result.totalWorkers}\n\n${detailsText}\n\n_La Fase 2 (Visual) arrancará en 20 min._`;
+        } else {
+          msg = `⚠️ *FASE 1 FINALIZADA (DISTRIBUIDO)*\n❌ *0/${userTotal}* cupos asegurados.\n🌐 Workers: ${result.totalWorkers}\n\n${detailsText}`;
+        }
+        telegramBotClient.sendMessage(tChat, msg, {parse_mode: "Markdown"}).catch(()=>{});
+      }
     }
 
     // Finalizar job

@@ -61,6 +61,29 @@ async function healthCheckAll() {
 }
 
 // ══════════════════════════════════════════
+// Intercalar cuentas por dueño para que todos
+// tengan representación justa en la oleada 0
+// ══════════════════════════════════════════
+function interleaveByOwner(accounts) {
+  const byOwner = {};
+  for (const acc of accounts) {
+    const key = acc.ownerChatId || 'default';
+    if (!byOwner[key]) byOwner[key] = [];
+    byOwner[key].push(acc);
+  }
+  const owners = Object.values(byOwner);
+  if (owners.length <= 1) return accounts; // Un solo dueño, no hace falta intercalar
+  const result = [];
+  const maxLen = Math.max(...owners.map(o => o.length));
+  for (let i = 0; i < maxLen; i++) {
+    for (const ownerAccs of owners) {
+      if (i < ownerAccs.length) result.push(ownerAccs[i]);
+    }
+  }
+  return result;
+}
+
+// ══════════════════════════════════════════
 // Distribuir cuentas equitativamente
 // ══════════════════════════════════════════
 function distributeAccounts(accounts, workerCount) {
@@ -123,14 +146,21 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
   
   const warmup = await warmUpWaitForApiOpen(probeAccount, maxWarmupMs);
   if (warmup.probeSuccess) {
-    log(`[COORD] ⚡ ¡API ABIERTA! Cuenta sonda asegurada. Disparando a los workers simultáneamente...`);
+    log(`[COORD] ⚡ ¡API ABIERTA! Cuenta sonda (${probeAccount.dni}) asegurada. Disparando a los workers simultáneamente...`);
   } else {
     log(`[COORD] ⚠️ Tiempo de warmup agotado o error en sonda. Disparando a los workers de todas formas...`);
   }
 
-  // 4. Distribuir cuentas
+  // 4. Intercalar cuentas por dueño y excluir sonda ya asegurada
+  let accountsToDistribute = accounts;
+  if (warmup.probeSuccess) {
+    accountsToDistribute = accounts.filter(a => a.dni !== probeAccount.dni);
+    log(`[COORD] Cuenta sonda (${probeAccount.dni}) ya asegurada en warmup, excluyéndola de workers. Quedan ${accountsToDistribute.length} por distribuir.`);
+  }
+  accountsToDistribute = interleaveByOwner(accountsToDistribute);
+  
   const onlineUrls = onlineWorkers.map(w => w.url);
-  const groups = distributeAccounts(accounts, onlineUrls.length);
+  const groups = distributeAccounts(accountsToDistribute, onlineUrls.length);
 
   log(`[COORD] Distribución:`);
   onlineUrls.forEach((url, i) => {
@@ -253,10 +283,16 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
 
   const workerResults = await Promise.all(workerPromises);
 
-  // 5. Agregar resultados
+  // 5. Agregar resultados (incluir sonda si fue excluida de workers)
   const allResults = [];
   let totalSuccesses = 0;
   let totalFailures = 0;
+
+  // Primero agregar la cuenta sonda si fue asegurada en warmup
+  if (warmup.probeSuccess) {
+    allResults.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre, method: "warmup-probe" });
+    totalSuccesses++;
+  }
 
   for (const wr of workerResults) {
     if (wr.results) allResults.push(...wr.results);
