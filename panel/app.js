@@ -1072,8 +1072,6 @@
             const dias = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'];
             const isGloballyInactive = acc.active === false;
             const isActiveToday = dias.includes(todayDay) && !isGloballyInactive;
-            
-            if (isActiveToday) activeToday++;
 
             const dayCells = ALL_DAYS.map(day => {
                 const isActive = dias.includes(day);
@@ -1169,7 +1167,8 @@
         let count = 0;
         for (const acc of state.accounts) {
             const dias = acc.dias || ['lun', 'mar', 'mie', 'jue', 'vie'];
-            if (dias.includes(todayDay)) count++;
+            const isGloballyInactive = acc.active === false;
+            if (dias.includes(todayDay) && !isGloballyInactive) count++;
         }
         todayCount.textContent = `Hoy: ${count} cuentas activas`;
     }
