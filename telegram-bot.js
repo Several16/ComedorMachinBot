@@ -725,9 +725,10 @@ async function startDistributedBot(chatId, config) {
     if (!listRunningJobs(ownerChatId).length) {
       stopLoadingIndicator(ownerChatId);
     }
-    const exitInfo = { jobId, chatId: ownerChatId, pid: process.pid, code: exitCode, at: nowIso(), logPath, dni: "", accounts: config.accounts };
+    const exitInfo = { jobId, chatId: ownerChatId, pid: process.pid, code: exitCode, at: nowIso(), logPath, dni: "", accounts: config.accounts, distributed: true };
     pushRecentExit(exitInfo);
-    await notifyJobFinished(exitInfo);
+    // Ya enviamos el reporte personalizado por usuario arriba, no llamamos a notifyJobFinished
+    // await notifyJobFinished(exitInfo);
 
     return {
       started: true,
