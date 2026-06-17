@@ -921,7 +921,51 @@ async function stopJobs(chatId, stopAll = false) {
   };
 }
 
-const userCronJobs = new Map();
+function getAutoMenuPayload(chatId) {
+  const user = ensureUserAutoRun(chatId);
+  const auto = user.autoRun;
+  const startAt = subtractMinutesFromTime(auto.time, AUTO_PRESTART_MINUTES) || "-";
+  const txt = [
+    "⚙️ *Tarea Automática (Diaria)*",
+    "───────────────",
+    `*Estado:* ${auto.enabled ? "✅ Habilitada" : "❌ Deshabilitada"}`,
+    `*Hora objetivo:* ${auto.time}`,
+    `*Inicio real:* ${startAt} (Lima)`,
+    `*Próxima ejecución:* ${auto.enabled ? nextAutoRunLabel(auto.time) : "-"}`,
+    `*Cuentas registradas:* ${Array.isArray(auto.accounts) ? auto.accounts.length : 0} cuenta(s)`,
+    `*Estrategia:* 🚀 Híbrido (Crudo + Foto)`,
+    `*Modo:* ${auto.turboMode ? "⚡ TURBO" : "🐢 NORMAL"}`,
+    "",
+    "Selecciona una acción:",
+  ].join("\n");
+  const opts = {
+    parse_mode: "Markdown",
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: auto.enabled ? "❌ Deshabilitar" : "✅ Habilitar", callback_data: auto.enabled ? "cron_disable" : "cron_enable" },
+          { text: "▶️ Probar ahora", callback_data: "cron_run_now" },
+        ],
+        [{ text: "🕒 Cambiar Hora", callback_data: "cron_time" }, { text: "➕ Añadir Cuenta", callback_data: "cron_credentials" }],
+        [{ text: "📋 Ver / Borrar Cuentas", callback_data: "cron_manage_accounts" }],
+        [{ text: `⚡ Modo: ${auto.turboMode ? "TURBO" : "NORMAL"}`, callback_data: "cron_mode" }],
+      ],
+    },
+  };
+  return { txt, opts };
+}
+
+async function renderAutoMenu(bot, chatId, messageId) {
+  const { txt, opts } = getAutoMenuPayload(chatId);
+  if (messageId) {
+    try {
+      await bot.editMessageText(txt, { chat_id: chatId, message_id: messageId, ...opts });
+      return;
+    } catch {}
+  }
+  await bot.sendMessage(chatId, txt, opts);
+}
+
 let unifiedCronJob = null;
 
 function startUnifiedCronLoop() {
