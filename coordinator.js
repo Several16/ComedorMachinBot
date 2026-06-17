@@ -350,7 +350,8 @@ if (require.main === module) {
     healthCheckAll().then(results => {
       console.log("\n=== Health Check ===");
       for (const r of results) {
-        console.log(`${r.status === "online" ? "🟢" : "🔴"} ${r.url} → ${r.status} ${r.workerId ? `(${r.workerId})` : ""} ${r.error || ""}`);
+        const uptimeStr = r.uptime ? `(Uptime: ${Math.round(r.uptime/60)}m)` : "";
+        console.log(`${r.status === "online" ? "🟢" : "🔴"} ${r.url} → ${r.status} ${r.workerId ? `(${r.workerId})` : ""} ${uptimeStr} ${r.error || ""}`);
       }
       process.exit(0);
     });
