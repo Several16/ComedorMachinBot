@@ -2237,7 +2237,15 @@ bot.on("polling_error", (error) => {
           .catch(() => {});
       }
     }
-    schedulePollingRestart("duplicate-instance");
+    // Para el 409 esperar 30s fijos para que Telegram libere la sesión vieja
+    // antes de intentar reconectar, evitando el bucle infinito de reinicios
+    if (pollingRestartTimer) return;
+    console.error("Reintentando polling en 30000ms (duplicate-instance — espera larga para liberar sesión).");
+    pollingRestartTimer = setTimeout(async () => {
+      pollingRestartTimer = null;
+      try { await bot.stopPolling({ cancel: true }); } catch {}
+      await startPolling("retry-409");
+    }, 30000);
     return;
   }
   if (/(ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|ECONNREFUSED|429|502|503|504|network)/i.test(message)) {
