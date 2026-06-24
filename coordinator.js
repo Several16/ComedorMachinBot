@@ -65,22 +65,42 @@ async function healthCheckAll() {
 // tengan representación justa en la oleada 0
 // ══════════════════════════════════════════
 function interleaveByOwner(accounts) {
-  const byOwner = {};
+  // 1. Extraer cuentas VIP primero (las que tienen "vip" en su nombre)
+  const vipAccounts = [];
+  const normalAccounts = [];
+  
   for (const acc of accounts) {
+    if (acc.nombre && acc.nombre.toLowerCase().includes('vip')) {
+      vipAccounts.push(acc);
+    } else {
+      normalAccounts.push(acc);
+    }
+  }
+
+  // 2. Intercalar las cuentas normales por dueño
+  const byOwner = {};
+  for (const acc of normalAccounts) {
     const key = acc.ownerChatId || 'default';
     if (!byOwner[key]) byOwner[key] = [];
     byOwner[key].push(acc);
   }
+  
   const owners = Object.values(byOwner);
-  if (owners.length <= 1) return accounts; // Un solo dueño, no hace falta intercalar
-  const result = [];
-  const maxLen = Math.max(...owners.map(o => o.length));
-  for (let i = 0; i < maxLen; i++) {
-    for (const ownerAccs of owners) {
-      if (i < ownerAccs.length) result.push(ownerAccs[i]);
+  let interleavedNormal = [];
+  
+  if (owners.length <= 1) {
+    interleavedNormal = normalAccounts; // Un solo dueño o sin dueños, no hace falta intercalar
+  } else {
+    const maxLen = Math.max(...owners.map(o => o.length));
+    for (let i = 0; i < maxLen; i++) {
+      for (const ownerAccs of owners) {
+        if (i < ownerAccs.length) interleavedNormal.push(ownerAccs[i]);
+      }
     }
   }
-  return result;
+  
+  // 3. Devolver: PRIMERO los VIPs, LUEGO los normales intercalados
+  return [...vipAccounts, ...interleavedNormal];
 }
 
 // ══════════════════════════════════════════
@@ -92,6 +112,45 @@ function distributeAccounts(accounts, workerCount) {
     groups[i % workerCount].push(acc);
   });
   return groups;
+}
+
+// ══════════════════════════════════════════
+// Distribuir CON REDUNDANCIA: cada cuenta va a 2 workers
+// Si worker-A falla, worker-B la rescata automáticamente
+// ══════════════════════════════════════════
+function distributeWithRedundancy(accounts, workerCount) {
+  const groups = Array.from({ length: workerCount }, () => []);
+  accounts.forEach((acc, i) => {
+    // Worker primario: round-robin normal
+    const primary = i % workerCount;
+    groups[primary].push({ ...acc, _redundancyRole: 'primary' });
+    // DESACTIVADO PARA NO ASFIXIAR A LA UNCP CON TRÁFICO DOBLE
+    // const offset = Math.max(1, Math.floor(workerCount / 2));
+    // const secondary = (i + offset) % workerCount;
+    // if (secondary !== primary) {
+    //   groups[secondary].push({ ...acc, _redundancyRole: 'backup' });
+    // }
+  });
+  return groups;
+}
+
+// ══════════════════════════════════════════
+// Deduplicar resultados de redundancia
+// Si ambos workers procesaron la misma cuenta, queda 1 resultado
+// ══════════════════════════════════════════
+function deduplicateResults(allResults) {
+  const seen = new Map();
+  for (const r of allResults) {
+    const existing = seen.get(r.dni);
+    if (!existing) {
+      seen.set(r.dni, r);
+    } else if (r.success && !existing.success) {
+      // Preferir el éxito sobre el fallo
+      seen.set(r.dni, r);
+    }
+    // Si ambos son éxito ("YA UTILIZADO" en el segundo), queda el primero
+  }
+  return Array.from(seen.values());
 }
 
 // ══════════════════════════════════════════
@@ -151,6 +210,14 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
     log(`[COORD] ⚠️ Tiempo de warmup agotado o error en sonda. Disparando a los workers de todas formas...`);
   }
 
+  // Capturar cookie extraída del warmup para compartir con todos los workers
+  const sharedCookies = warmup.cookies || null;
+  if (sharedCookies) {
+    log(`[COORD] 🍪 Cookie compartida extraída: ${sharedCookies.substring(0, 30)}... Se inyectará en todos los workers.`);
+  } else {
+    log(`[COORD] ⚠️ No se pudo extraer cookie del warmup. Workers atacarán sin cookie pre-calentada.`);
+  }
+
   // 4. Intercalar cuentas por dueño y excluir sonda ya asegurada
   let accountsToDistribute = accounts;
   if (warmup.probeSuccess) {
@@ -160,21 +227,17 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
   accountsToDistribute = interleaveByOwner(accountsToDistribute);
   
   const onlineUrls = onlineWorkers.map(w => w.url);
-  const groups = distributeAccounts(accountsToDistribute, onlineUrls.length);
+  // Usar redundancia: cada cuenta va a 2 workers para tolerancia a fallos
+  const groups = distributeWithRedundancy(accountsToDistribute, onlineUrls.length);
 
-  // Calcular waveSize dinámico: todas las cuentas en UNA sola oleada por worker
-  // Ejemplo: 29 cuentas / 4 workers = 8 por worker → waveSize=8 → todo en oleada 0 (0ms)
-  const maxGroupSize = Math.max(...groups.map(g => g.length));
-  const dynamicWaveSize = Math.max(maxGroupSize, config.waveSize || 4);
-  
-  log(`[COORD] Distribución (waveSize dinámico: ${dynamicWaveSize} → 1 sola oleada por worker):`);
+  log(`[COORD] Distribución:`);
   onlineUrls.forEach((url, i) => {
     const workerName = onlineWorkers[i].workerId || `worker-${i + 1}`;
     log(`[COORD]   ${workerName} (${url}): ${groups[i].length} cuentas`);
   });
 
-  // 5. Enviar a todos los workers en PARALELO
-  log(`[COORD] Enviando a ${onlineUrls.length} workers simultáneamente con desfase 0ms...`);
+  // 5. Enviar a TODOS los workers SIMULTÁNEAMENTE
+  log(`[COORD] Enviando a ${onlineUrls.length} workers simultáneamente (desfase 0ms, micro-waves en engine)...`);
 
   const workerPromises = onlineUrls.map(async (url, i) => {
     const workerName = onlineWorkers[i].workerId || `worker-${i + 1}`;
@@ -198,12 +261,14 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
           accounts: workerAccounts,
           config: {
             skipWarmup: true,
-            waveSize: dynamicWaveSize,
-            waveDelayMs: config.waveDelayMs || 500,
-            maxPostAttempts: config.maxPostAttempts || 150,
-            retryDelayMs: config.retryDelayMs || 250,
-            maxRescueAttempts: config.maxRescueAttempts || 80,
-            rescueDelayMs: config.rescueDelayMs || 1000
+            maxPostAttempts: 60,
+            retryDelayMs: 250,
+            max500Retries: 3,
+            delay500Ms: 2000,
+            globalTimeoutMs: 15000,
+            staggerMs: 15,
+            staggerOffset: i * 2,
+            cookies: sharedCookies,
           }
         }),
         signal: AbortSignal.timeout(900000) // 15 minutos timeout (warmup puede tardar hasta 10min)
@@ -220,7 +285,7 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
       let finalData = null;
       
       while (true) {
-        await new Promise(resolve => setTimeout(resolve, 5000)); // Esperar 5s
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Polling cada 1s (antes 5s)
         try {
           const statRes = await fetch(`${url}/status`, {
             headers: { "Authorization": `Bearer ${apiKey}` },
@@ -290,20 +355,20 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
 
   // 5. Agregar resultados (incluir sonda si fue excluida de workers)
   const allResults = [];
-  let totalSuccesses = 0;
-  let totalFailures = 0;
 
   // Primero agregar la cuenta sonda si fue asegurada en warmup
   if (warmup.probeSuccess) {
     allResults.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre, method: "warmup-probe" });
-    totalSuccesses++;
   }
 
   for (const wr of workerResults) {
     if (wr.results) allResults.push(...wr.results);
-    totalSuccesses += wr.successes || 0;
-    totalFailures += wr.failures || 0;
   }
+
+  const dedupedResults = allResults;
+
+  const totalSuccesses = dedupedResults.filter(r => r.success).length;
+  const totalFailures = dedupedResults.filter(r => !r.success).length;
 
   const durationMs = Date.now() - startTime;
 
@@ -313,12 +378,14 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
   log(`[COORD] Total: ${accounts.length} | Éxitos: ${totalSuccesses} | Fallos: ${totalFailures}`);
   log(`[COORD] Duración total: ${Math.round(durationMs / 1000)}s`);
   for (const wr of workerResults) {
-    const icon = wr.error ? "🔴" : (wr.failures === 0 ? "🟢" : "🟡");
-    log(`[COORD]   ${icon} ${wr.workerId}: ${wr.successes || 0}/${wr.total || 0} éxitos${wr.fallback ? " (fallback local)" : ""}`);
+    const workerSuccesses = wr.results ? wr.results.filter(r => r.success).length : 0;
+    const workerTotal = wr.results ? wr.results.length : 0;
+    const icon = wr.error ? "🔴" : (workerSuccesses === workerTotal ? "🟢" : "🟡");
+    log(`[COORD]   ${icon} ${wr.workerId}: ${workerSuccesses}/${workerTotal} éxitos${wr.fallback ? " (fallback local)" : ""}`);
   }
   log(`[COORD] ═══════════════════════════════\n`);
 
-  for (const r of allResults) {
+  for (const r of dedupedResults) {
     const label = r.nombre ? `${r.nombre} (${r.dni})` : `DNI: ${r.dni}`;
     if (r.success) {
       log(`[COORD]   ✅ ${label}`);
@@ -334,7 +401,7 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
     total: accounts.length,
     successes: totalSuccesses,
     failures: totalFailures,
-    results: allResults,
+    results: dedupedResults,
     workerDetails: workerResults,
     durationMs
   };

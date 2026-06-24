@@ -12,7 +12,7 @@ const promises = urls.map(url => {
     if (!match) return resolve(`❌ ${url} - URL inválida`);
     const ip = match[1];
     
-    const cmd = `sshpass -p '${pass}' ssh -o StrictHostKeyChecking=no root@${ip} "cd ~/ComedorMachinBot && git pull origin main && pm2 restart worker-api"`;
+    const cmd = `sshpass -p '${pass}' scp -o StrictHostKeyChecking=no ~/ComedorMachinBot/charola-engine.js root@${ip}:~/ComedorMachinBot/charola-engine.js && sshpass -p '${pass}' ssh -o StrictHostKeyChecking=no root@${ip} "pm2 restart worker-api"`;
     console.log(`[${ip}] Enviando comando...`);
     
     exec(cmd, (error, stdout, stderr) => {

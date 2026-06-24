@@ -49,6 +49,10 @@
         modalMessage: $('#modalMessage'),
         modalCancel: $('#modalCancel'),
         modalConfirm: $('#modalConfirm'),
+        transferModal: $('#transferModal'),
+        transferTargetUser: $('#transferTargetUser'),
+        transferModalCancel: $('#transferModalCancel'),
+        transferModalConfirm: $('#transferModalConfirm'),
         toastContainer: $('#toastContainer'),
         currentTime: $('#currentTime'),
         connectionStatus: $('#connectionStatus'),
@@ -549,6 +553,7 @@
                     <td>
                         <div style="display: flex; gap: 0.5rem; align-items: center; justify-content: flex-end;">
                             ${toggleHtml}
+                            <button class="btn-transfer-sm" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" title="Transferir cuenta" style="background: none; border: none; font-size: 1.2rem; cursor: pointer; color: var(--primary); padding: 0 4px;">⇄</button>
                             <button class="btn-delete-sm" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" title="Eliminar cuenta">
                                 ✕
                             </button>
@@ -560,6 +565,11 @@
         // Attach delete handlers
         DOM.accountsBody.querySelectorAll('.btn-delete-sm').forEach(btn => {
             btn.addEventListener('click', () => deleteAccount(btn.dataset.chatid || 'any', btn.dataset.dni));
+        });
+
+        // Attach transfer handlers
+        DOM.accountsBody.querySelectorAll('.btn-transfer-sm').forEach(btn => {
+            btn.addEventListener('click', () => openTransferModal(btn.dataset.chatid || 'any', btn.dataset.dni));
         });
 
         // Attach toggle handlers
@@ -732,6 +742,68 @@
         } catch (err) {
             toast('error', 'Error de conexión', 'No se pudo conectar con el servidor');
         }
+    }
+
+    async function openTransferModal(chatId, dni) {
+        DOM.transferTargetUser.innerHTML = '<option value="">Cargando usuarios...</option>';
+        DOM.transferModal.classList.remove('hidden');
+        
+        try {
+            const { ok, data } = await api('GET', '/api/dashboard/users');
+            if (ok && data.users) {
+                const users = data.users;
+                let options = '<option value="" disabled selected>Selecciona un usuario...</option>';
+                users.forEach(u => {
+                    const name = u.firstName || u.username || 'Sin Nombre';
+                    options += `<option value="${escapeHtml(u.chatId)}">${escapeHtml(name)} (${escapeHtml(u.chatId)})</option>`;
+                });
+                DOM.transferTargetUser.innerHTML = options;
+            } else {
+                DOM.transferTargetUser.innerHTML = '<option value="">Error cargando usuarios</option>';
+            }
+        } catch (err) {
+            DOM.transferTargetUser.innerHTML = '<option value="">Error de conexión</option>';
+        }
+
+        const onCancel = () => {
+            DOM.transferModal.classList.add('hidden');
+            cleanup();
+        };
+
+        const onConfirm = async () => {
+            const targetChatId = DOM.transferTargetUser.value;
+            if (!targetChatId) {
+                toast('warning', 'Aviso', 'Selecciona un usuario destino.');
+                return;
+            }
+            if (targetChatId === chatId) {
+                toast('warning', 'Aviso', 'El usuario seleccionado ya es el dueño.');
+                return;
+            }
+
+            try {
+                const { ok, data } = await api('PUT', '/api/dashboard/accounts/transfer', { sourceChatId: chatId, dni, targetChatId });
+                if (ok) {
+                    toast('success', 'Transferido', 'La cuenta ha sido transferida exitosamente.');
+                    fetchAccounts();
+                    fetchStats();
+                    DOM.transferModal.classList.add('hidden');
+                    cleanup();
+                } else {
+                    toast('error', 'Error', data.message || 'No se pudo transferir');
+                }
+            } catch (err) {
+                toast('error', 'Error', 'Fallo de conexión');
+            }
+        };
+
+        const cleanup = () => {
+            DOM.transferModalCancel.removeEventListener('click', onCancel);
+            DOM.transferModalConfirm.removeEventListener('click', onConfirm);
+        };
+
+        DOM.transferModalCancel.addEventListener('click', onCancel);
+        DOM.transferModalConfirm.addEventListener('click', onConfirm);
     }
 
     async function deleteAccount(chatId, dni) {

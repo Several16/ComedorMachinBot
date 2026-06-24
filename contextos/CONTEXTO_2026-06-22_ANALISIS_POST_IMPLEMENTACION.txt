@@ -1,0 +1,153 @@
+ANÁLISIS POST-IMPLEMENTACIÓN — 22 JUNIO 2026
+==============================================
+
+1. LOGS DEL DÍA (LÍNEA BASE — CÓDIGO ANTIGUO)
+------------------------------------------------
+El cron de hoy (06:57 Lima) corrió con el código SIN optimizar. Sirve como
+línea base para comparar mañana.
+
+DATOS CRUDOS:
+  - Cuentas totales: 34
+  - RAW éxitos: 28/34 → 82.4%
+  - Visual (ejecución separada por usuario): 21/26 → 80.8%
+  - Duración total RAW: 1124 segundos → 18.7 minutos
+  - Rescate cruzado: 0/6 recuperadas → 0%
+  - Redundancia: "27 salvadas" (métrica inflada)
+  - Workers terminaron entre 13s y 390s (gap enorme = 377s de arrastre)
+  - 6 fallos: 60390992, 73968815 (AARON), 77171893 (21), 72478134 (ÑARIO),
+               62615541 (JOSHEP), 74169511 (43 A)
+  - Todos fallaron con "Rescate agotado (80 intentos)" = 80 intentos × 6 = 480
+    requests desperdiciadas + 150 intentos RAW de la fase principal
+    ≈ 230 intentos/cuenta × 6 = 1380 requests basura
+
+DURACIÓN DESGLOSADA:
+  - warmup: ~? (sonda 71155185 asegurada)
+  - Burst RAW principal: ~? (1-2 min)
+  - Waves post-burst (esperas entre waves de 500ms): ~10-15 min extra
+  - Fase de rescate (80 intentos por cuenta × 6 cuentas): ~10 min
+  - Redundancia + rescate cruzado: ~3 min
+  - Total: 18.7 min para 34 cuentas
+
+HALLAZGOS CLAVE:
+  1. 6/34 cuentas (17.6%) fallaron SIEMPRE con 500 + rescate → inválidas o expiradas
+  2. Redundancia NO salvó realmente — las cuentas que "salvó" ya habían sido
+     marcadas como éxito en el worker primario (confirmado en análisis previo)
+  3. Rescate cruzado 0% — confirma eliminación correcta
+  4. WARMUP funciona: detectó apertura de API y disparó workers
+  5. Cookie extraction falló ("No se pudo extraer cookie") → irrelevante con Express
+
+2. LO QUE LOS NUEVOS CAMBIOS ELIMINAN
+---------------------------------------
+| Problema en línea base   | Cómo lo resuelve el nuevo código |
+|--------------------------|----------------------------------|
+| 18.7 min de duración     | ~5s post-warmup (3 bursts, sin rescue) |
+| 1380 requests basura     | 18 requests (6 cuentas × 3 bursts) |
+| Rescue 0%                | Eliminado completamente |
+| Rescue cruzado 0%        | Eliminado completamente |
+| Redundancia inflada      | Eliminada completamente |
+| Waves con espera 500ms   | Promise.all → paralelo total |
+| 377s de arrastre         | Sin stagger, todos disparan juntos |
+| TCP/TLS handshake por req| Keep-Alive reusa sockets |
+| DNS lookup cada worker   | DNS pre-resuelto a 38.43.155.136 |
+
+3. ¿QUÉ MÁS SE PUEDE MEJORAR?
+-------------------------------
+
+A. PRE-FILTER DE CUENTAS MUERTAS (ALTA PRIORIDAD)
+   ------------------------------------------------
+   - 60390992, 62615541 (JOSHEP), 73968815 (AARON): fallan TODOS los días
+   - Propuesta: archivo `cuentas_expiradas.json` que se actualiza automáticamente
+   - Si una cuenta falla 3 días seguidos con código 404 → skip permanente
+   - Ahorro: ~18 requests/día que van a cuentas muertas
+   - Implementación: script aparte que revisa logs históricos y genera lista negra
+
+B. BURST ADAPTATIVO (MEDIA PRIORIDAD)
+   ------------------------------------
+   - Hoy: esperas fijas de 2s entre burst
+   - Propuesta: medir en tiempo real el ratio de HTTP 500
+   - Si las 500 caen a 0 antes de 2s → disparar Burst 2 inmediatamente
+   - Si todavía hay muchas 500 después de 2s → extender espera a 3s
+   - Implementación: Promise.race entre timeout fijo y detección de "pausa de 500"
+   - Beneficio potencial: ganar ~0.5-1s dentro de la ventana
+
+C. MULTI-SHOT PARA TODAS LAS CUENTAS (BAJA PRIORIDAD)
+   ----------------------------------------------------
+   - Hoy: VIPs tienen 3 shots/burst, normales 1
+   - Si mañana el éxito es < 90%: probar 2 shots para todas
+   - Riesgo: duplica tráfico (340 requests en vez de 170)
+   - Beneficio: ~5-10% más de probabilidad si el 500 es aleatorio
+   - Solo si es necesario después de ver resultado de mañana
+
+D. SOCKET PRE-WARMING (MEDIA PRIORIDAD)
+   ---------------------------------------
+   - El warmup actual abre 1 socket (cuenta sonda)
+   - Propuesta: durante warmup, hacer 3-5 requests paralelas para pre-crear
+     sockets TCP en el pool de Keep-Alive
+   - Así Burst 1 no tiene que esperar que se abran sockets nuevos
+   - Ya implementado implícitamente: el warmup abre socket, Burst 1 lo reusa
+   - Mejora: worker-side warmup con múltiples sockets antes de recibir orden
+
+E. COMPRESS BURST TIMING (BAJA PRIORIDAD)
+   ----------------------------------------
+   - RTT: ~650ms. Si Burst 1 falla rápido en 1s, podríamos:
+     - Burst 1: t=0
+     - Burst 2: t=1000 (en vez de 2000)
+     - Burst 3: t=2500 (en vez de 4000)
+   - Esto deja margen si la ventana se cierra antes de 5s
+   - Riesgo: si MySQL deadlock tarda 2s en liberarse, Burst 2 muy temprano = waste
+   - Solo recomendable si mañana el burst 2 no recupera nada en 2000ms
+
+F. DISTRIBUCIÓN POR LATENCIA (BAJA PRIORIDAD)
+   --------------------------------------------
+   - Hoy: distribución equitativa (4 cuentas/worker)
+   - Propuesta: workers rápidos (worker-8: 13s) reciben más cuentas
+   - Workers lentos (worker-9: 390s) reciben menos
+   - Beneficio: reduce el arrastre total
+   - Complejidad: requiere medir latencia en cada ronda
+
+G. ELIMINAR VISUAL POR COMPLETO (EVALUAR MAÑANA)
+   ------------------------------------------------
+   - Si RAW ≥ 92%: visual es redundante
+   - Si RAW = 95%+ y el visual sigue ejecutándose: ahorra ~18 min de ejecución
+   - Decisión: esperar resultado de mañana
+
+H. WARMUP SIN LOGIN (MUY BAJA PRIORIDAD)
+   ----------------------------------------
+   - Si Keep-Alive funciona, el primer request del warmup abre el socket
+   - Pero si la API no requiere cookie/sesión (Express), ni siquiera
+     necesitamos warmup con login — solo un HEAD o GET a cualquier endpoint
+     para abrir el socket TCP
+   - Ahorro: ~1 request de warmup por worker
+
+4. ÁRBOL DE DECISIÓN PARA MAÑANA 23 JUNIO
+-------------------------------------------
+Resultado RAW éxito ≥ 92%?
+  ├── SÍ → Sistema estable. Considerar solo Pre-filter (A) y evaluar eliminar Visual (G)
+  └── NO → Revisar logs:
+           ├── ¿HTTP 500 dominante?
+           │   ├── SÍ → Burst adaptativo (B) o multi-shot (C)
+           │   └── NO → Revisar timing (E) o distribución (F)
+           └── ¿Cuentas muertas?
+               └── SÍ → Pre-filter (A) inmediato
+
+5. COMPARATIVA ANTES VS DESPUÉS (PROYECTADA)
+----------------------------------------------
+| Métrica              | Antes (22 Jun) | Después (esperado) |
+|----------------------|----------------|---------------------|
+| RAW éxito            | 28/34 (82.4%)  | ~31-33/34 (92-96%) |
+| Duración post-warmup | 18.7 min       | ~5 segundos         |
+| Requests to UNCP     | ~3000-5000     | ~150-200            |
+| Rescue 0%            | 480 requests   | 0 requests          |
+| Redundancia          | ~1800 requests | 0 requests          |
+| Cuentas muertas      | 6 (17.6%)      | 6 (mismas, pero sin desperdicio) |
+
+6. MÉTRICAS A MONITOREAR MAÑANA
+---------------------------------
+  [ ] RAW éxito total (target: ≥31/34 = 92%)
+  [ ] Duración post-warmup (target: ≤10s)
+  [ ] Requests totales a UNCP (target: ≤300)
+  [ ] Cuentas que fallan por HTTP 500 vs 404 (para diagnóstico)
+  [ ] Worker más rápido y más lento (sin stagger)
+  [ ] ¿HTTP 500 aparecen? ¿Cuántas se recuperan en Burst 2 vs Burst 3?
+  [ ] ¿VIPs tienen mejor tasa que normales? (valida multi-shot)
+  [ ] Tiempo real de Keep-Alive: ¿cuántos requests reusan socket?

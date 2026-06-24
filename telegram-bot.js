@@ -156,7 +156,9 @@ function loadJson(filePath, fallbackFactory) {
 }
 
 function saveJson(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+  const tmp = filePath + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+  fs.renameSync(tmp, filePath);
 }
 
 function addDays(baseDate, days) {
@@ -1002,6 +1004,28 @@ async function renderAutoMenu(bot, chatId, messageId) {
 }
 
 let unifiedCronJob = null;
+const userCronJobs = new Map();
+
+function setupUserCron(chatId) {
+  const user = licenses.users[String(chatId)];
+  if (!user || !user.autoRun) return;
+  const cronKey = String(chatId);
+  if (userCronJobs.has(cronKey)) {
+    userCronJobs.get(cronKey).stop();
+    userCronJobs.delete(cronKey);
+  }
+  if (!user.autoRun.enabled || !user.autoRun.time) return;
+  userCronJobs.set(cronKey, { stop: () => {} });
+  console.log(`[CRON] ${chatId}: cron registrado (hora ${user.autoRun.time}) — manejado por cron unificado`);
+}
+
+function ensureTaskAt(hour) {
+  return Promise.resolve({ ok: true, stdout: "Linux VPS: usa PM2 + cron unificado", stderr: "" });
+}
+
+function runTaskCommand(args) {
+  return Promise.resolve({ ok: true, stdout: "Linux VPS: usa PM2 + cron unificado", stderr: "" });
+}
 
 function startUnifiedCronLoop() {
   if (unifiedCronJob) unifiedCronJob.stop();
@@ -1061,10 +1085,12 @@ function startUnifiedCronLoop() {
           const resultRawPromise = startDistributedBot("GLOBAL", {
             accounts: unifiedRawAccounts,
             turboMode: true,
-            waveSize: 4,
-            waveDelayMs: 500,
-            maxPostAttempts: 150,
+            maxPostAttempts: 60,
             retryDelayMs: 250,
+            max500Retries: 3,
+            delay500Ms: 2000,
+            globalTimeoutMs: 15000,
+            staggerMs: 15,
           });
           resultRawPromise.then(res => {
             if (!res.started) unifiedVisualAccounts.filter(uv => uv.isHybrid).forEach(uv => telegramBotClient.sendMessage(uv.chatId, `❌ Falló fase unificada: ${res.reason}`).catch(()=>{}));
@@ -1100,6 +1126,10 @@ function startUnifiedCronLoop() {
 
 function initializeAllCrons() {
   startUnifiedCronLoop();
+  for (const chatId of Object.keys(licenses.users)) {
+    setupUserCron(chatId);
+  }
+  console.log(`[CRON] Inicializados ${userCronJobs.size} crons de usuario + cron unificado`);
 }
 
 async function notifyLicenseExpirations() {
@@ -1441,7 +1471,7 @@ async function handleFlowInput(bot, msg) {
       clearFlow(chatId);
       const u = ensureUserAutoRun(chatId);
       if (!Array.isArray(u.autoRun.accounts)) u.autoRun.accounts = [];
-      u.autoRun.accounts.push({ dni: flow.data.dni, codigo: flow.data.codigo, nombre });
+      u.autoRun.accounts.push({ dni: flow.data.dni, codigo: flow.data.codigo, nombre, dias: ['lun', 'mar', 'mie', 'jue', 'vie'] });
       saveState();
       setupUserCron(chatId);
       await bot.sendMessage(chatId, `✅ Cuenta añadida.\n👤 ${nombre}\n🪪 DNI: ${flow.data.dni}\nTotal cuentas: ${u.autoRun.accounts.length}`, { reply_markup: userKeyboard(admin) });
@@ -1696,7 +1726,6 @@ async function onCommand(bot, msg, command, args) {
       turboMode = DEFAULTS.turboMode;
       if (args.length >= 3) {
         if (args[2].toLowerCase() === "normal") turboMode = false;
-        if (args[2].toLowerCase() === "turbo") true; // Typo fix
         if (args[2].toLowerCase() === "turbo") turboMode = true;
       }
     } else {
@@ -2168,10 +2197,12 @@ bot.on("callback_query", async (query) => {
           resultRawPromise = startDistributedBot(chatId, {
             accounts: accountsToRun,
             turboMode: turboModeFlag,
-            waveSize: 4,
-            waveDelayMs: 500,
-            maxPostAttempts: 150,
+            maxPostAttempts: 60,
             retryDelayMs: 250,
+            max500Retries: 3,
+            delay500Ms: 2000,
+            globalTimeoutMs: 15000,
+            staggerMs: 15,
           });
         } else {
           resultRawPromise = Promise.resolve(startBot(chatId, {
@@ -2456,6 +2487,59 @@ app.delete("/api/dashboard/accounts/:chatId/:dni", panelAuth, (req, res) => {
   res.json({ ok: true, message: `Account ${dni} removed`, remaining: after });
 });
 
+// PUT /api/dashboard/accounts/transfer - Transfer account to another user
+app.put("/api/dashboard/accounts/transfer", panelAuth, (req, res) => {
+  const { sourceChatId, dni, targetChatId } = req.body || {};
+  if (!sourceChatId || !dni || !targetChatId) {
+    return res.status(400).json({ ok: false, message: "sourceChatId, dni, and targetChatId are required" });
+  }
+
+  // Handle 'any' for sourceChatId
+  let actualSourceChatId = sourceChatId;
+  let sourceUser = null;
+  
+  if (sourceChatId === 'any') {
+    for (const [uid, user] of Object.entries(licenses.users)) {
+      if (user?.autoRun?.accounts?.some(a => String(a.dni) === String(dni))) {
+        actualSourceChatId = uid;
+        sourceUser = user;
+        break;
+      }
+    }
+  } else {
+    sourceUser = licenses.users[sourceChatId];
+  }
+
+  if (!sourceUser?.autoRun?.accounts) {
+    return res.status(404).json({ ok: false, message: "Source user or accounts not found" });
+  }
+
+  const accountIndex = sourceUser.autoRun.accounts.findIndex(a => String(a.dni) === String(dni));
+  if (accountIndex === -1) {
+    return res.status(404).json({ ok: false, message: "Account not found in source user" });
+  }
+
+  const targetUser = ensureUserAutoRun(targetChatId);
+  if (!Array.isArray(targetUser.autoRun.accounts)) targetUser.autoRun.accounts = [];
+
+  // Check if target already has this DNI
+  if (targetUser.autoRun.accounts.some(a => String(a.dni) === String(dni))) {
+    return res.status(409).json({ ok: false, message: "Target user already has an account with this DNI" });
+  }
+
+  // Extract account
+  const [accountToTransfer] = sourceUser.autoRun.accounts.splice(accountIndex, 1);
+  
+  // Update ownerChatId to reflect new owner
+  accountToTransfer.ownerChatId = targetChatId;
+  
+  // Add to target
+  targetUser.autoRun.accounts.push(accountToTransfer);
+  
+  saveState();
+  res.json({ ok: true, message: "Account transferred successfully" });
+});
+
 // GET /api/dashboard/history - Recent execution history
 app.get("/api/dashboard/history", panelAuth, (_req, res) => {
   // Read recent log files to extract execution summaries
@@ -2602,10 +2686,12 @@ app.post("/api/dashboard/execute", panelAuth, async (req, res) => {
     const result = await startDistributedBot(resolvedChatId, {
       accounts,
       turboMode: true,
-      waveSize: 4,
-      waveDelayMs: 500,
-      maxPostAttempts: 150,
+      maxPostAttempts: 60,
       retryDelayMs: 250,
+      max500Retries: 3,
+      delay500Ms: 2000,
+      globalTimeoutMs: 15000,
+      staggerMs: 15,
     });
     res.json({ ok: true, ...result });
   } catch (e) {

@@ -5,8 +5,19 @@
  *   - worker-server.js (en cada VPS worker)
  *   - charola-auto.js (ejecución local / fallback)
  * 
- * Exporta: warmUpWaitForApiOpen, processAccountRawPost, processAccountRawRescue, executeRawBatch
+ * Exporta: warmUpWaitForApiOpen, processAccountRawPost, executeRawBatch
  */
+
+const https = require("https");
+const dns = require("dns");
+
+const KEEP_ALIVE_AGENT = new https.Agent({
+  keepAlive: true,
+  maxSockets: 100,
+  keepAliveMsecs: 30000,
+  timeout: 60000,
+  scheduling: "lifo"
+});
 
 const API_URL = process.env.UNCP_API_URL || "https://comensales.uncp.edu.pe/api/registros";
 const WEB_URL = process.env.UNCP_WEB_URL || "https://comedor.uncp.edu.pe/charola";
@@ -18,7 +29,8 @@ function sleep(ms) {
 
 const FATAL_KEYWORDS = [
   "DNI NO VALIDO", "CODIGO NO VALIDO", "NO EXISTE", "ELIMINADO",
-  "SUSPENDIDO", "BLOQUEADO", "INHABILITADO", "DATOS INCORRECTOS"
+  "SUSPENDIDO", "BLOQUEADO", "INHABILITADO", "DATOS INCORRECTOS",
+  "CUPOS AGOTADOS", "AGOTADO"
 ];
 
 function isFatalError(msg) {
@@ -26,30 +38,84 @@ function isFatalError(msg) {
   return FATAL_KEYWORDS.some(kw => upper.includes(kw));
 }
 
+// ── Headers de navegador para camuflaje ──
+const BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+  "Accept": "application/json, text/plain, */*",
+  "Accept-Language": "es-PE,es;q=0.9,en;q=0.8",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Origin": "https://comedor.uncp.edu.pe",
+  "Referer": "https://comedor.uncp.edu.pe/charola",
+  "Sec-Ch-Ua": '"Google Chrome";v="137", "Chromium";v="137", "Not/A)Brand";v="24"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"Windows"',
+  "Sec-Fetch-Dest": "empty",
+  "Sec-Fetch-Mode": "cors",
+  "Sec-Fetch-Site": "same-site"
+};
+
+// ── Construir headers de fetch combinando navegador + cookies opcionales ──
+function buildFetchHeaders(config = {}) {
+  const headers = { ...BROWSER_HEADERS };
+  // Inyectar headers custom si el coordinador los envió
+  if (config.headers) Object.assign(headers, config.headers);
+  // Inyectar cookie si el coordinador la extrajo del warmup
+  if (config.cookies) headers["Cookie"] = config.cookies;
+  return headers;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // WARM-UP: sondear la API hasta que abra y asegure cupo con la sonda
 // FILOSOFÍA: REINTENTAR SIEMPRE salvo éxito definitivo (200/201)
 // ═══════════════════════════════════════════════════════════════
-async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
+async function warmUpWaitForApiOpen(probeAccount, maxWaitMs, config = {}) {
   const maxWait = maxWaitMs || 10 * 60 * 1000;
-  const probeIntervalMs = 1500;
   const startTime = Date.now();
   let attempt = 0;
   let lastMsg = '';
+  let extractedCookies = null;
+
+  const fetchHeaders = buildFetchHeaders(config);
 
   console.log(`[WARMUP] Sondeando API con DNI ${probeAccount.dni} hasta que abra... (máx ${Math.round(maxWait / 1000)}s)`);
+  console.log(`[WARMUP] 🛡️ Headers de navegador activados (Chrome 137)`);
+  console.log(`[WARMUP] 📈 Sondeo dinámico: 1500ms → 800ms → 400ms cerca de hora cero`);
 
   while (Date.now() - startTime < maxWait) {
     attempt++;
+    // Sondeo dinámico: reducir intervalo al acercarse a hora cero
+    const elapsed = Date.now() - startTime;
+    const elapsedSec = elapsed / 1000;
+    let probeIntervalMs;
+    if (elapsedSec < 120) {
+      probeIntervalMs = 1500; // Primeros 2 min: sondeo normal
+    } else if (elapsedSec < 165) {
+      probeIntervalMs = 800;  // Minuto 2-3: sondeo acelerado
+    } else {
+      probeIntervalMs = 400;  // Últimos 30s antes de hora cero: sondeo agresivo
+    }
     try {
-      const formData = new FormData();
-      formData.append("data", JSON.stringify({ t1_dni: probeAccount.dni, t1_codigo: probeAccount.codigo }));
+      const body = `data=${encodeURIComponent(JSON.stringify({ t1_dni: probeAccount.dni, t1_codigo: probeAccount.codigo }))}`;
 
       const res = await fetch(API_URL, {
         method: "POST",
-        body: formData,
+        headers: { ...fetchHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+        agent: KEEP_ALIVE_AGENT,
         signal: AbortSignal.timeout(8000)
       });
+
+      // ── Extraer cookie PHPSESSID de la respuesta ──
+      const setCookieHeader = res.headers.get("set-cookie");
+      if (setCookieHeader) {
+        const phpMatch = setCookieHeader.match(/PHPSESSID=([^;]+)/);
+        if (phpMatch) {
+          extractedCookies = `PHPSESSID=${phpMatch[1]}`;
+          if (attempt <= 3) {
+            console.log(`[WARMUP] 🍪 Cookie extraída: ${extractedCookies.substring(0, 30)}...`);
+          }
+        }
+      }
 
       const json = await res.json();
       const msg = String(json.message || "").toUpperCase().trim();
@@ -63,26 +129,22 @@ async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
       if (json.code === 200 || json.code === 201) {
         console.log(`[WARMUP] ¡API ABIERTA! Cupo asegurado en sondeo para DNI ${probeAccount.dni} (intento ${attempt}, ${Math.round((Date.now() - startTime) / 1000)}s)`);
         console.log(`[RAW_SUCCESS] DNI: ${probeAccount.dni}`);
-        return { open: true, probeSuccess: true, dni: probeAccount.dni };
+        return { open: true, probeSuccess: true, dni: probeAccount.dni, cookies: extractedCookies };
       }
 
       // "YA UTILIZADO" = API activa, ya tiene ticket
       if (msg.includes("YA UTILIZADO")) {
         console.log(`[WARMUP] API activa — cuenta sonda ya tiene ticket. Lanzando ataque.`);
-        return { open: true, probeSuccess: true, dni: probeAccount.dni };
+        return { open: true, probeSuccess: true, dni: probeAccount.dni, cookies: extractedCookies };
       }
 
       // Error FATAL de datos (DNI inválido, etc.) — no tiene sentido seguir sondeando con esta cuenta
       if (isFatalError(msg)) {
         console.log(`[WARMUP] Error fatal de datos: "${json.message}". Considerando API abierta pero sonda falló.`);
-        return { open: true, probeSuccess: false, dni: probeAccount.dni, reason: json.message };
+        return { open: true, probeSuccess: false, dni: probeAccount.dni, reason: json.message, cookies: extractedCookies };
       }
 
       // ═══ CUALQUIER OTRA RESPUESTA → REINTENTAR ═══
-      // Esto incluye: 404, 500, "CUPOS AGOTADOS", "FUERA DE HORARIO",
-      // "SERVICIO NO DISPONIBLE", mensajes vacíos, y CUALQUIER
-      // respuesta desconocida. La API no está abierta hasta que
-      // devuelva 200/201.
       await sleep(probeIntervalMs);
 
     } catch (e) {
@@ -94,26 +156,54 @@ async function warmUpWaitForApiOpen(probeAccount, maxWaitMs) {
   }
 
   console.log(`[WARMUP] Tiempo máximo de espera agotado (${Math.round(maxWait / 1000)}s). Último msg: "${lastMsg}". Lanzando ataque de todas formas.`);
-  return { open: false, probeSuccess: false };
+  return { open: false, probeSuccess: false, cookies: extractedCookies };
 }
 
+// Flag global: si cualquier cuenta detecta CUPOS AGOTADOS, todas se detienen
+let globalCuposAgotados = false;
+
 // ═══════════════════════════════════════════════════════════════
-// ATAQUE RAW: procesar UNA cuenta con reintentos agresivos
-// FILOSOFÍA: REINTENTAR SIEMPRE salvo éxito o error fatal de datos
+// ATAQUE RAW: procesar UNA cuenta con reintentos inteligentes
+// 
+// ESTRATEGIA:
+//   - 404/300 (API flaky)        → retry rápido cada 250ms (atrapa apertura)
+//   - 500 (MySQL deadlock)       → retry cada 2s, máx 3 veces (deadlock cleara en 1-2s)
+//   - 200/201 (éxito)            → return inmediato
+//   - YA UTILIZADO               → return inmediato (éxito)
+//   - FATAL (DNI inválido, etc.) → return inmediato (no reintentar)
+//   - CUPOS AGOTADOS             → flag global, detener TODO
+//   - Timeout global: 15s        → parar sin importar el intento
 // ═══════════════════════════════════════════════════════════════
 async function processAccountRawPost(account, config = {}) {
   const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RAW]`;
-  const maxPostAttempts = config.maxPostAttempts || 150;
+  const maxPostAttempts = config.maxPostAttempts || 60;
   const retryDelayPostMs = config.retryDelayMs || 250;
+  const max500Retries = config.max500Retries || 3;
+  const delay500Ms = config.delay500Ms || 2000;
+  const globalTimeoutMs = config.globalTimeoutMs || 15000;
+
+  const fetchHeaders = buildFetchHeaders(config);
+  const startTime = Date.now();
+  let count500 = 0;
 
   for (let attempt = 1; attempt <= maxPostAttempts; attempt += 1) {
+    if (globalCuposAgotados) {
+      return { success: false, dni: account.dni, nombre: account.nombre, reason: "Cupos agotados (global)" };
+    }
+
+    if (Date.now() - startTime > globalTimeoutMs) {
+      console.log(`[RAW_FAIL] DNI: ${account.dni} | Timeout global (${globalTimeoutMs / 1000}s)`);
+      return { success: false, dni: account.dni, nombre: account.nombre, reason: `Timeout global (${globalTimeoutMs / 1000}s)` };
+    }
+
     try {
-      const formData = new FormData();
-      formData.append("data", JSON.stringify({ t1_dni: account.dni, t1_codigo: account.codigo }));
+      const body = `data=${encodeURIComponent(JSON.stringify({ t1_dni: account.dni, t1_codigo: account.codigo }))}`;
 
       const res = await fetch(API_URL, {
         method: "POST",
-        body: formData,
+        headers: { ...fetchHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+        agent: KEEP_ALIVE_AGENT,
         signal: AbortSignal.timeout(8000)
       });
 
@@ -132,107 +222,66 @@ async function processAccountRawPost(account, config = {}) {
         return { success: true, dni: account.dni, nombre: account.nombre, note: "Ya tenía ticket" };
       }
 
+      // ═══ CUPOS AGOTADOS → flag global, detener TODO ═══
+      if (msg.includes("CUPOS AGOTADOS") || msg.includes("AGOTADO")) {
+        console.log(`[RAW_FAIL] DNI: ${account.dni} | CUPOS AGOTADOS — deteniendo todas las cuentas`);
+        globalCuposAgotados = true;
+        return { success: false, dni: account.dni, nombre: account.nombre, reason: "Cupos agotados" };
+      }
+
       // ═══ ERROR FATAL DE DATOS → no reintentar ═══
       if (isFatalError(msg)) {
         console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR FATAL: ${json.message} (code=${json.code})`);
         return { success: false, dni: account.dni, nombre: account.nombre, reason: json.message };
       }
 
-      // ═══ CUALQUIER OTRA RESPUESTA → REINTENTAR ═══
-      // 404, 500, "CUPOS", "HORARIO", mensajes desconocidos — TODO se reintenta
-      if (attempt % 15 === 0) {
+      // ═══ ERROR 500 = MySQL DEADLOCK → retry con espera de 2s ═══
+      if (json.code === 500) {
+        count500++;
+        if (count500 > max500Retries) {
+          console.log(`[RAW_FAIL] DNI: ${account.dni} | HTTP 500 persistente (${count500 - 1} retries)`);
+          return { success: false, dni: account.dni, nombre: account.nombre, reason: `HTTP 500 persistente (${count500 - 1} retries)` };
+        }
+        if (attempt <= 5 || count500 <= 3) {
+          console.log(`${prefix} HTTP 500 (deadlock) intento ${count500}/${max500Retries} — esperando ${delay500Ms}ms...`);
+        }
+        await sleep(delay500Ms);
+        continue;
+      }
+
+      // ═══ 404/300/OTRO = API flaky → retry rápido cada 250ms ═══
+      if (attempt % 20 === 0) {
         console.log(`${prefix} Intento ${attempt}/${maxPostAttempts}: code=${json.code} msg="${json.message || 'sin mensaje'}", reintentando...`);
       }
       await sleep(retryDelayPostMs);
 
     } catch (e) {
-      if (attempt % 15 === 0) console.log(`${prefix} Intento ${attempt}: Timeout/Error red (${e.message}), reintentando...`);
+      if (attempt % 20 === 0) console.log(`${prefix} Intento ${attempt}: Timeout/Error red (${e.message}), reintentando...`);
       await sleep(retryDelayPostMs);
     }
   }
-  console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Max intentos post-apertura agotado (${maxPostAttempts})`);
-  return { success: false, dni: account.dni, nombre: account.nombre, reason: `Max intentos post-apertura agotado (${maxPostAttempts})` };
+  console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Max intentos agotado (${maxPostAttempts})`);
+  return { success: false, dni: account.dni, nombre: account.nombre, reason: `Max intentos agotado (${maxPostAttempts})` };
 }
 
-// ═══════════════════════════════════════════════════════════════
-// RESCATE: reintentos individuales con más paciencia
-// ═══════════════════════════════════════════════════════════════
-async function processAccountRawRescue(account, config = {}) {
-  const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RESCATE]`;
-  const maxRescueAttempts = config.maxRescueAttempts || 80;
-  const rescueDelayMs = config.rescueDelayMs || 1000;
-  const rescueTimeoutMs = config.rescueTimeoutMs || 15000;
 
-  console.log(`${prefix} Iniciando rescate (${maxRescueAttempts} intentos, ${rescueDelayMs}ms delay)...`);
-
-  for (let attempt = 1; attempt <= maxRescueAttempts; attempt += 1) {
-    try {
-      const formData = new FormData();
-      formData.append("data", JSON.stringify({ t1_dni: account.dni, t1_codigo: account.codigo }));
-
-      const res = await fetch(API_URL, {
-        method: "POST",
-        body: formData,
-        signal: AbortSignal.timeout(rescueTimeoutMs)
-      });
-
-      const json = await res.json();
-      const msg = String(json.message || "").toUpperCase().trim();
-
-      if (json.code === 200 || json.code === 201) {
-        console.log(`[RAW_SUCCESS] DNI: ${account.dni} (rescatado en intento ${attempt})`);
-        return { success: true, dni: account.dni, nombre: account.nombre, note: "Rescatado" };
-      }
-
-      if (msg.includes("YA UTILIZADO")) {
-        console.log(`[RAW_SUCCESS] DNI: ${account.dni} (rescate: ticket ya existía)`);
-        return { success: true, dni: account.dni, nombre: account.nombre, note: "Ya tenía ticket" };
-      }
-
-      // Error fatal de datos — no reintentar
-      if (isFatalError(msg)) {
-        console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR FATAL (rescate): ${json.message}`);
-        return { success: false, dni: account.dni, nombre: account.nombre, reason: json.message };
-      }
-
-      if (msg.includes("AGOTADOS") || msg.includes("SIN CUPOS")) {
-        console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Cupos agotados (rescate)`);
-        return { success: false, dni: account.dni, nombre: account.nombre, reason: "Cupos agotados" };
-      }
-
-      if (attempt % 10 === 0) {
-        console.log(`${prefix} Intento ${attempt}/${maxRescueAttempts}: code=${json.code} msg="${json.message || 'sin mensaje'}"`);
-      }
-
-      await sleep(rescueDelayMs);
-
-    } catch (e) {
-      if (attempt % 10 === 0) console.log(`${prefix} Intento ${attempt}: ${e.message}`);
-      await sleep(rescueDelayMs);
-    }
-  }
-  console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Rescate agotado (${maxRescueAttempts} intentos)`);
-  return { success: false, dni: account.dni, nombre: account.nombre, reason: `Rescate agotado (${maxRescueAttempts} intentos)` };
-}
 
 // ═══════════════════════════════════════════════════════════════
 // EJECUTAR BATCH COMPLETO: warmup → oleadas → rescate
 // ═══════════════════════════════════════════════════════════════
 async function executeRawBatch(accounts, config = {}) {
-  const waveSize = config.waveSize || 4;
-  const waveDelayMs = config.waveDelayMs || 500;
   const maxWarmupMs = config.maxWarmupMs || 10 * 60 * 1000;
   const startTime = Date.now();
 
   console.log(`[ENGINE] Iniciando ejecución RAW para ${accounts.length} cuenta(s).`);
-  console.log(`[ENGINE] Config: waveSize=${waveSize}, waveDelay=${waveDelayMs}ms, maxAttempts=${config.maxPostAttempts || 150}`);
+  console.log(`[ENGINE] Modo: tren de aterrizaje (15ms stagger) + url-encoded + retries inteligentes (500→2s, 404→250ms, timeout=15s)`);
 
   // ── FASE A: Warm-up ──
   let pendingAccounts;
   const results = [];
 
   if (config.skipWarmup) {
-    console.log(`[ENGINE] ⚡ Saltando WARMUP por orden del Coordinador. Lanzando cuentas con desfase 0ms...`);
+    console.log(`[ENGINE] ⚡ Saltando WARMUP por orden del Coordinador. Lanzando cuentas...`);
     pendingAccounts = [...accounts];
   } else {
     const probeAccount = accounts[0];
@@ -248,44 +297,48 @@ async function executeRawBatch(accounts, config = {}) {
     }
   }
 
-  // ── FASE B: Oleadas ──
+  // ── FASE B: "Tren de Aterrizaje" — stagger individual anti-deadlock ──
+  // Cada cuenta se dispara con STAGGER_MS de diferencia.
+  // MySQL procesa 1 transacción a la vez → cero Lock Upgrade Deadlocks.
+  // El coordinator envía staggerOffset para que workers no se pisen entre sí.
   if (pendingAccounts.length > 0) {
-    const waves = [];
-    for (let i = 0; i < pendingAccounts.length; i += waveSize) {
-      waves.push(pendingAccounts.slice(i, i + waveSize));
-    }
+    try {
+      const apiHost = new URL(API_URL).hostname;
+      const ips = await dns.promises.resolve4(apiHost);
+      console.log(`[ENGINE] 🌐 DNS pre-resuelto: ${apiHost} → ${ips[0]}`);
+    } catch (e) {}
 
-    console.log(`[ENGINE] Dividiendo ${pendingAccounts.length} cuentas en ${waves.length} oleada(s) de máx ${waveSize}...`);
+    globalCuposAgotados = false;
 
-    const allWavePromises = waves.map((wave, w) => {
+    const STAGGER_MS = config.staggerMs || 15;
+    const staggerOffset = config.staggerOffset || 0;
+
+    console.log(`[ENGINE] 🚀 Tren de aterrizaje: ${pendingAccounts.length} cuentas, ${STAGGER_MS}ms entre cada una (offset ${staggerOffset}ms)`);
+
+    const allPromises = pendingAccounts.map((acc, i) => {
+      const fireAt = staggerOffset + (i * STAGGER_MS);
       return (async () => {
-        if (w > 0) await sleep(w * waveDelayMs);
-        console.log(`[ENGINE] ═══ OLEADA ${w + 1}/${waves.length}: ${wave.length} cuentas ═══`);
-        const waveResults = await Promise.all(wave.map(acc => processAccountRawPost(acc, config)));
-        const successes = waveResults.filter(r => r.success).length;
-        console.log(`[ENGINE] Oleada ${w + 1} finalizada: ${successes}/${wave.length} éxitos`);
-        return waveResults.map(r => ({ ...r, method: `wave-${w + 1}` }));
+        await sleep(fireAt);
+
+        if (globalCuposAgotados) {
+          return { success: false, dni: acc.dni, nombre: acc.nombre, reason: "Cupos agotados (global)" };
+        }
+
+        const isVip = acc.nombre && acc.nombre.toLowerCase().includes('vip');
+        if (isVip) {
+          return Promise.all([
+            processAccountRawPost(acc, config),
+            processAccountRawPost(acc, config),
+            processAccountRawPost(acc, config)
+          ]).then(shots => shots.find(r => r.success) || shots[0]);
+        }
+        return processAccountRawPost(acc, config);
       })();
     });
 
-    const allWaveResults = await Promise.all(allWavePromises);
-    for (const wr of allWaveResults) results.push(...wr);
-  }
-
-  // ── FASE C: Rescate ──
-  const phase1Failures = results.filter(r => !r.success);
-  if (phase1Failures.length > 0) {
-    console.log(`[ENGINE] ${phase1Failures.length} cuenta(s) fallaron. Esperando 5s para rescate...`);
-    await sleep(5000);
-    console.log(`[ENGINE] Iniciando rescate individual...`);
-    for (const fail of phase1Failures) {
-      const account = accounts.find(a => a.dni === fail.dni);
-      if (!account) continue;
-      console.log(`[ENGINE] Rescatando DNI: ${account.dni}...`);
-      const rescue = await processAccountRawRescue(account, config);
-      const idx = results.findIndex(r => r.dni === fail.dni);
-      if (idx !== -1) results[idx] = { ...rescue, method: "rescue" };
-    }
+    const allResults = await Promise.all(allPromises);
+    results.push(...allResults);
+    globalCuposAgotados = false;
   }
 
   // ── Resumen ──
@@ -317,7 +370,6 @@ async function executeRawBatch(accounts, config = {}) {
 module.exports = {
   warmUpWaitForApiOpen,
   processAccountRawPost,
-  processAccountRawRescue,
   executeRawBatch,
   sleep
 };

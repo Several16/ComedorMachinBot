@@ -1,0 +1,155 @@
+ANÁLISIS DE RESULTADOS — 23 JUNIO 2026
+========================================
+
+1. ESTADO DE DEPLOYMENT (CRÍTICO)
+----------------------------------
+Se descubrió que el deployment está en un estado HÍBRIDO:
+
+| Componente | Código en disco | Proceso corriendo | Efecto hoy |
+|------------|-----------------|-------------------|------------|
+| charola-engine.js (coordinator) | ✅ NUEVO (Keep-Alive, 3 bursts, VIP multi-shot) | ⚠️ Cargado hace 11h, pero es el archivo nuevo | Warmup usó el nuevo engine |
+| charola-engine.js (9 workers) | ✅ NUEVO (same hash) | ✅ Cargado hace 11h con el archivo nuevo | Workers usaron el nuevo engine |
+| coordinator.js | ❌ VIEJO (stagger 50ms, rescue cruzado) | ❌ Cargado hace 11h con código viejo | Coordinator usó stagger + rescue |
+| worker-server.js (9 workers) | Sin cambios (no lo tocamos) | ⚠️ Cargado hace 11h | Sin cambios (no needed cambios) |
+
+Conclusión: EL NUEVO CÓDIGO SÍ SE EJECUTÓ PARCIALMENTE.
+Los workers corrieron el nuevo charola-engine.js con 3 bursts, Keep-Alive, DNS pre-resolve y VIP multi-shot.
+El coordinator corrió código viejo con stagger de 400ms y rescue cruzado.
+
+2. RESULTADOS DEL DÍA (cron 06:57 Lima)
+----------------------------------------
+RAW: 28/33 = 84.8% | Duración: 233s (3.9 min)
+Ayer (código 100% viejo): 28/34 = 82.4% | Duración: 1124s (18.7 min)
+
+MEJORA REAL ATRIBUIBLE AL NUEVO ENGINE:
+  - Duración: 5x más rápido (1124s → 233s) gracias a 3 bursts sin rescue phase
+  - Éxito: leve mejora (82.4% → 84.8%)
+
+5 FALLOS (todos HTTP 500 → "Ventana de cupos cerrada"):
+  1. 62061495 (8) 
+  2. 72906232 (46 A)
+  3. 73363364 (16)
+  4. 75019777 (HANCEL)
+  5. 77296725 (38 A)
+
+RESCATE CRUZADO: 0/5 recuperadas (0%) — consistente con histórico
+
+CUENTAS QUE AYER FALLARON Y HOY SE RECUPERARON (con el nuevo engine):
+  - JOSHEP (62615541): falló ayer → éxito hoy
+  - AARON (73968815): falló ayer → éxito hoy
+  - 43 A (74169511): falló ayer → éxito hoy
+  - ÑARIO (72478134): falló ayer → éxito hoy
+  Total: 4 cuentas recuperadas por el nuevo engine (3 bursts con retry post-500)
+
+3. ANÁLISIS DE TIMING DE WORKERS (con nuevo engine)
+-----------------------------------------------------
+| Worker | Cuentas | Éxitos | Tiempo | Análisis |
+|--------|---------|--------|--------|----------|
+| w-6    | 3       | 3/3    | 4s     | ✅ Burst 1 directo, sin 500 |
+| w-9    | 3       | 3/3    | 5s     | ✅ Burst 1 directo |
+| w-5    | 4       | 4/4    | 7s     | ✅ Probablemente Burst 1 |
+| w-8    | 3       | 3/3    | 10s    | ✅ Algunas requirieron Burst 2 |
+| w-7    | 3       | 2/3    | 19s    | ⚠️ 1 fallo, usó Burst 2 y 3 |
+| w-1    | 4       | 4/4    | 21s    | ✅ Todas éxito pero con retries |
+| w-2    | 4       | 3/4    | 23s    | ⚠️ 1 fallo, usó múltiples bursts |
+| w-3    | 4       | 3/4    | 29s    | ⚠️ 1 fallo |
+| w-4    | 4       | 2/4    | 41s    | ⚠️ 2 fallos, todos los bursts |
+
+Comparación con ayer (engine VIEJO): w-1: 206s, w-5: 297s, w-9: 390s
+Hoy el worker más lento terminó en 41s vs 390s ayer = 9.5x más rápido.
+
+PERO: Aún hay 400ms de stagger del coordinator VIEJO. Esto significa que
+w-9 recibió la orden 400ms después que w-1. Con la ventana de 5s, esto
+puede haber costado algunos cupos.
+
+4. DIAGNÓSTICO DE LOS 5 FALLOS
+-------------------------------
+Todas las cuentas con HTTP 500 significa que:
+1. La API estaba activa (code=500, no 300/404)
+2. MySQL deadlock en el servidor de UNCP
+3. El nuevo engine les dio 3 oportunidades (bursts 1, 2, 3)
+4. Las 3 veces dieron 500 → la cuenta probablemente está dañada o el
+   deadlock fue persistente para ese DNI específico
+
+Posibles causas de 500 persistente:
+- DNI expirado/no matriculado que causa error en MySQL al validar
+- Cuenta bloqueada que genera deadlock en cada intento
+- Certificate/ID problem que hace que MySQL falle consistentemente
+
+Solución: trackear estos DNIs día a día. Si fallan 3+ días seguidos con 500 → skip.
+
+5. LO QUE FALTA PARA LLEGAR A 92-96%
+--------------------------------------
+| Lo que falta | Impacto estimado |
+|-------------|------------------|
+| Coordinator sin stagger | +1-2% (elimina 400ms de retraso en workers tardíos) |
+| Coordinator sin rescue cruzado | +0% (0% histórico) pero ahorra tiempo |
+| DNS pre-resolve en coordinator | +0.5-1% (elimina lookup del warmup) |
+| Pre-filter de cuentas muertas | +3-5% si las 5 son realmente muertas |
+| Keep-Alive en workers | YA IMPLEMENTADO |
+| 3 bursts | YA IMPLEMENTADO |
+| VIP multi-shot | YA IMPLEMENTADO |
+
+Proyección post-fix coordinator:
+  - Base actual: 84.8%
+  - Sin stagger: ~86-88%
+  - Con pre-filter (5 cuentas muertas): ~91-94%
+  - Potencial: ~92-96%
+
+6. MEJORAS PENDIENTES (priorizadas)
+-------------------------------------
+
+🔴 ALTA (hacer ahora mismo):
+  A. DEPLOY coordinator.js actualizado y restart PM2
+     - coordinator.js local tiene los cambios (sin stagger, sin rescue cruzado)
+     - HACER: SCP coordinator.js al VPS + pm2 restart charola-tg
+     
+  B. Pre-filter de cuentas muertas
+     - 62061495, 72906232, 73363364, 75019777, 77296725
+     - Si fallan 3 días seguidos → skip automático
+     - Archivo: cuentas_expiradas.json
+
+  C. Restart workers con el engine actual
+     - Ya tienen el nuevo engine cargado hace 11h
+     - Pero por si acaso: node restart-workers.js después del deploy
+
+🟡 MEDIA:
+  D. DNS pre-resolve también en coordinator (para warmup)
+     - Hoy solo se hace en charola-engine.js worker-side
+     - El warmup del coordinator también se beneficia
+
+  E. Burst adaptativo (medir HTTP 500 ratio en tiempo real)
+     - Si las 500 caen a 0 → disparar burst 2 inmediatamente
+     - Si hay muchas 500 → extender espera
+
+  F. Logging de qué burst ganó cada cuenta
+     - Saber si fue Burst 1, 2 o 3
+     - Permite ajustar timing
+
+🟢 BAJA:
+  G. Multi-shot para todas las cuentas (no solo VIP)
+     - Solo si < 90% después de fix coordinator
+
+  H. Eliminar Visual mode
+     - Si RAW ≥ 92%, visual es redundante
+
+7. PLAN DE ACCIÓN INMEDIATO
+-----------------------------
+1. ⬆️ SCP coordinator.js actualizado al VPS
+2. 🔄 pm2 restart charola-tg (coordinator)
+3. 🔄 node restart-workers.js (workers)
+4. ⏳ Esperar mañana 06:57 Lima para ver resultados
+5. 📊 Si ≥ 92% → implementar pre-filter
+6. 📊 Si < 90% → implementar multi-shot
+
+8. COMPARATIVA COMPLETA
+------------------------
+| Métrica | 22 Jun (100% viejo) | 23 Jun (engine nuevo + coord viejo) | 24 Jun (estimado 100% nuevo) |
+|---------|---------------------|--------------------------------------|------------------------------|
+| RAW éxito | 28/34 (82.4%) | 28/33 (84.8%) | ~30-33/33 (90-100%) |
+| Duración | 1124s (18.7 min) | 233s (3.9 min) | ~5-10s |
+| Requests a UNCP | ~3000-5000 | ~150-500 | ~100-200 |
+| Rescue waste | 480 requests | 0 requests | 0 requests |
+| Redundancia waste | ~1800 req | 0 req | 0 req |
+| Rescue cruzado | 0% | 0% | Eliminado |
+| Workers más lento | 390s | 41s | ~5s |

@@ -1,0 +1,155 @@
+CONTEXTO DE OPTIMIZACIÓN DEFINITIVA — 22 JUNIO 2026
+===================================================
+
+1. OBJETIVO
+-----------
+Optimizar ComedorMachinBot para máxima efectividad en ventana de ~5 segundos
+donde los cupos de UNCP están disponibles (días de semana con competencia externa).
+
+2. INFRAESTRUCTURA REAL DE UNCP (Descubrimiento)
+--------------------------------------------------
+- Frontend: Angular SPA en https://comedor.uncp.edu.pe/charola
+- Backend API: Node.js/Express en https://comensales.uncp.edu.pe/api/registros
+- Proxy reverso: Apache/2.4.62 (Unix) OpenSSL/1.0.2k-fips
+- IP: 38.43.155.136 (misma para ambos subdominios)
+- CORS: Access-Control-Allow-Origin: * (abierto)
+- Keep-Alive: SÍ funciona (timeout=5s, max=100 requests)
+- No hay rate limiting (0 HTTP 429 en toda la historia)
+- HTTP 500 = MySQL deadlock/connection pool, NO saturación de Apache
+- Express puede manejar miles de req/s — el bottleneck es MySQL
+- La API acepta: multipart/form-data (hoy) y application/x-www-form-urlencoded
+
+3. CÓDIGOS DE RESPUESTA API
+-----------------------------
+- 200/201 → Cupo asegurado (éxito)
+- 300 → Servicio no disponible / formulario cerrado
+- 404 → DNI/Código inválido
+- 500 → MySQL deadlock (recuperable después de 1-2s)
+
+4. CAMBIOS IMPLEMENTADOS HOY
+-----------------------------
+
+A. charola-engine.js (motor RAW):
+
+  1. Keep-Alive Agent (líneas 13-19)
+     - https.Agent con keepAlive:true, maxSockets:100, keepAliveMsecs:30000
+     - Inyectado en warmup y processAccountRawPost vía agent: KEEP_ALIVE_AGENT
+     - Reusa conexiones TCP/TLS, ahorra ~100ms de handshake por request
+
+  2. DNS pre-resuelto (líneas ~253-259)
+     - dns.promises.resolve4('comensales.uncp.edu.pe') antes del burst
+     - IP resuelta: 38.43.155.136
+     - Elimina lookup DNS del primer request de cada worker
+
+  3. HTTP 500 = stop inmediato (líneas 196-200)
+     - Si json.code === 500 → retorna fail con reason "Ventana de cupos cerrada (HTTP 500)"
+     - Elimina 150+80 retries por cuenta que falla
+     - Estas cuentas se reintentan en Burst 2 y Burst 3
+
+  4. 3 Burst paralelos (líneas ~260-300)
+     - Burst 1 (t=0ms): todas las cuentas en paralelo
+     - Espera 2s (MySQL deadlock se libera)
+     - Burst 2 (t=2000ms): solo cuentas con HTTP 500 en burst 1
+     - Espera 2s
+     - Burst 3 (t=4000ms): solo cuentas con HTTP 500 en burst 2
+     - Total ~4.7s (dentro de la ventana de 5s)
+
+  5. VIP priority: multi-shot (líneas ~270-280)
+     - Cuentas con "vip" en su nombre → 3 requests simultáneas por burst
+     - Se considera éxito si AL MENOS UNA de las 3 funciona (Promise.all + find)
+     - Cuentas normales → 1 request por burst
+     - Total VIP: hasta 9 intentos (3 bursts × 3 shots)
+     - Total normal: hasta 3 intentos (3 bursts × 1 shot)
+
+  6. Eliminado: processAccountRawRescue (función completa)
+     - 0% de éxito histórico en todos los logs analizados
+
+  7. Eliminado: Waves y rescue phase en executeRawBatch
+     - Ya no hay espera de 500ms entre waves
+     - Ya no hay espera de 5s pre-rescate
+     - Ya no hay 80 intentos de rescate por cuenta
+
+B. coordinator.js (orquestador):
+
+  1. Sin stagger (línea ~246)
+     - Antes: 50ms entre cada worker = 400ms total
+     - Ahora: todos los workers reciben la orden simultáneamente
+
+  2. Eliminado: Rescate cruzado (~100 líneas eliminadas)
+     - 0% de éxito histórico en todos los logs analizados
+
+  3. Eliminado: Config de rescue en payload a workers
+     - maxRescueAttempts, rescueDelayMs eliminados
+
+5. ARCHIVOS MODIFICADOS
+-------------------------
+- charola-engine.js (modificado: ~369 → ~360 líneas)
+- coordinator.js (modificado: ~568 → ~441 líneas)
+- worker-server.js (sin cambios)
+- charola-auto.js (sin cambios)
+- telegram-bot.js (sin cambios)
+
+6. FLUJO MAÑANA (esperado)
+---------------------------
+11:57:00 UTC (06:57 Lima) → Cron inicia
+         → Coordinator verifica 9 workers
+         → Warmup: cada 1.5s POST a API con cuenta sonda
+11:57:XX → API abre (code=200/201)
+         → DNS pre-resuelto: comensales → 38.43.155.136
+         → 9 workers reciben orden simultáneamente
+         → Cada worker con Keep-Alive (sockets reusados)
+         
+         Burst 1 (t=0ms):
+           - VIPs: 3 requests paralelas por cuenta
+           - Normales: 1 request por cuenta
+           - HTTP 500 → queda para Burst 2
+           - HTTP 200/201 → éxito
+         ⏳ Espera 2s
+         
+         Burst 2 (t=2000ms):
+           - Solo cuentas que dieron HTTP 500 en Burst 1
+           - Misma lógica VIP/normal
+         ⏳ Espera 2s
+         
+         Burst 3 (t=4000ms):
+           - Solo cuentas que siguen en HTTP 500
+           - Último intento
+         
+         FIN (~4.7s post-warmup)
+         → Coordinator recopila resultados
+         → Envía resumen a Telegram
+
+7. MÉTRICAS ESPERADAS
+----------------------
+- Duración post-warmup: ~5 segundos (vs 8-18 min hoy)
+- RAW success: ~92-96% (vs 73-88% hoy)
+- Tráfico a UNCP: ~150-200 requests (vs ~2,000-5,000 hoy)
+- Reducción de saturación: ~95% menos tráfico en ventana extendida
+
+8. SANGRADO (lo que NO se cambió)
+-----------------------------------
+- Warmup timing: sigue siendo cada 1500ms (funciona bien)
+- Modo visual (charola-auto.js): sin cambios
+- Panel admin y Telegram bot: sin cambios
+- worker-server.js: sin cambios (solo pasa config)
+- Estructura de workers: 9 workers, mismos IPs
+- Endpoints de API: mismos (post, form-data, etc.)
+
+9. NOTAS TÉCNICAS
+-------------------
+- dns.promises.resolve4() es core de Node.js, no requiere dependencias
+- https.Agent con keepAlive es core de Node.js
+- Promise.allSettled no se usa; Promise.all con find() es suficiente porque
+  processAccountRawPost NUNCA lanza excepción (siempre retorna objeto)
+- Los workers existentes NO necesitan actualización de worker-server.js
+  porque require('./charola-engine.js') carga el nuevo archivo al reiniciar
+- PM2 reiniciado en coordinator + 9 workers post-deploy
+- El cron job NO necesita cambios (sigue igual)
+
+10. POSIBLES MEJORAS FUTURAS (NO implementadas hoy)
+-----------------------------------------------------
+- Asignación ponderada: medir latencia de cada worker y dar más cuentas a rápidos
+- application/x-www-form-urlencoded en vez de multipart (mínimo overhead)
+- Pre-warming de sockets TCP durante warmup
+- Detección de cuentas permanentemente dañadas (pre-filter antes del burst)
+- Auto-adjust de timing entre bursts basado en latencia medida

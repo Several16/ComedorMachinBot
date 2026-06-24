@@ -42,6 +42,27 @@
         </div>
     </div>
 
+    <!-- Transfer Account Modal -->
+    <div id="transferModal" class="modal-overlay hidden">
+        <div class="modal-card glass-card">
+            <div class="modal-icon" style="color: var(--primary)">⇄</div>
+            <h3>Transferir Cuenta</h3>
+            <p class="text-muted" id="transferModalDesc" style="margin-bottom: 1rem; font-size: 0.9rem;">Selecciona el nuevo usuario para la cuenta.</p>
+            
+            <div class="form-group" style="text-align: left; margin-bottom: 1.5rem;">
+                <label for="transferTargetUser" class="form-label">Nuevo Usuario (Telegram):</label>
+                <select id="transferTargetUser" class="form-input" style="width: 100%;">
+                    <option value="">Cargando usuarios...</option>
+                </select>
+            </div>
+
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="transferModalCancel">Cancelar</button>
+                <button class="btn btn-primary" id="transferModalConfirm">Transferir</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Group Popover -->
     <div id="groupPopover" class="popover glass-card hidden">
         <div class="popover-header">Asignar Grupo</div>
