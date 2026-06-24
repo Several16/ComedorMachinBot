@@ -548,6 +548,7 @@
                     <td>${escapeHtml(String(dni))}</td>
                     <td>${escapeHtml(String(code))}</td>
                     <td>${escapeHtml(String(name))}</td>
+                    <td><span class="badge badge-neutral" style="font-size: 0.75rem; background: var(--bg-card-hover); color: var(--text-muted); border: 1px solid var(--border);">${escapeHtml(String(a.chatId || 'Global'))}</span></td>
                     <td><span class="badge badge-neutral clickable-group" style="cursor: pointer;" data-dni="${escapeHtml(String(dni))}" data-chatid="${escapeHtml(String(a.chatId || 'any'))}" data-current-group="${escapeHtml(String(grupo))}" title="Clic para cambiar grupo">${escapeHtml(String(grupo))}</span></td>
                     <td>${badgeHtml}</td>
                     <td>
