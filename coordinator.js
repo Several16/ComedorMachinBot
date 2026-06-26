@@ -4,25 +4,19 @@
  * Corre en el VPS principal. Divide las cuentas entre los workers
  * disponibles y recopila resultados.
  * 
- * Uso desde telegram-bot.js:
- *   const { executeDistributed, healthCheckAll } = require("./coordinator");
- *   const result = await executeDistributed(accounts, config);
- * 
- * Uso desde CLI (test):
- *   node coordinator.js --test
- *   node coordinator.js --health
+ * Incluye integración con CapSolver para resolver Cloudflare Turnstile.
  */
 
 const path = require("path");
 
-// Cargar .env si existe
 try {
   require("dotenv").config({ path: path.join(__dirname, ".env") });
-} catch (e) {
-  // dotenv no es obligatorio
-}
+} catch (e) {}
 
-// ── Configuración de Workers ──
+const TURNSTILE_SITEKEY = "0x4AAAAAADqlWZzvgyd1vKlq";
+const TURNSTILE_URL = "https://comedor.uncp.edu.pe/charola";
+const CAPSOLVER_API = "https://api.capsolver.com";
+
 function getWorkerUrls() {
   const urls = [];
   for (let i = 1; i <= 10; i++) {
@@ -36,8 +30,90 @@ function getApiKey() {
   return process.env.WORKER_API_KEY || "dev-key";
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ══════════════════════════════════════════
-// Health Check — verificar que workers estén vivos
+// CAPSOLVER: Generar pool de tokens Turnstile
+// ══════════════════════════════════════════
+async function createTurnstileTask(apiKey) {
+  try {
+    const res = await fetch(`${CAPSOLVER_API}/createTask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clientKey: apiKey,
+        task: {
+          type: "AntiTurnstileTaskProxyLess",
+          websiteURL: TURNSTILE_URL,
+          websiteKey: TURNSTILE_SITEKEY
+        }
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+    const json = await res.json();
+    if (json.errorId !== 0) {
+      console.log(`[CAPSOLVER] Error createTask: ${json.errorDescription}`);
+      return null;
+    }
+    return json.taskId;
+  } catch (e) {
+    console.log(`[CAPSOLVER] Error createTask: ${e.message}`);
+    return null;
+  }
+}
+
+async function getTurnstileResult(apiKey, taskId) {
+  for (let i = 0; i < 60; i++) {
+    await sleep(1500);
+    try {
+      const res = await fetch(`${CAPSOLVER_API}/getTaskResult`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientKey: apiKey, taskId }),
+        signal: AbortSignal.timeout(15000)
+      });
+      const json = await res.json();
+      if (json.status === "ready" && json.solution?.token) {
+        return json.solution.token;
+      }
+      if (json.errorId !== 0 || json.status === "failed") {
+        console.log(`[CAPSOLVER] Task ${taskId} falló: ${json.errorDescription}`);
+        return null;
+      }
+    } catch (e) {
+      // Timeout temporal, seguir intentando
+    }
+  }
+  console.log(`[CAPSOLVER] Task ${taskId} timeout (90s)`);
+  return null;
+}
+
+async function generateTurnstilePool(count, apiKey, log = console.log) {
+  log(`[CAPSOLVER] Generando ${count} tokens Turnstile en paralelo...`);
+  const startTime = Date.now();
+
+  const taskPromises = [];
+  for (let i = 0; i < count; i++) {
+    taskPromises.push(
+      (async () => {
+        const taskId = await createTurnstileTask(apiKey);
+        if (!taskId) return null;
+        return getTurnstileResult(apiKey, taskId);
+      })()
+    );
+  }
+
+  const results = await Promise.all(taskPromises);
+  const tokens = results.filter(t => t !== null);
+  const elapsed = Math.round((Date.now() - startTime) / 1000);
+  log(`[CAPSOLVER] ✅ ${tokens.length}/${count} tokens listos en ${elapsed}s (expiran en 5 min)`);
+  return tokens;
+}
+
+// ══════════════════════════════════════════
+// Health Check
 // ══════════════════════════════════════════
 async function healthCheckAll() {
   const workerUrls = getWorkerUrls();
@@ -61,11 +137,9 @@ async function healthCheckAll() {
 }
 
 // ══════════════════════════════════════════
-// Intercalar cuentas por dueño para que todos
-// tengan representación justa en la oleada 0
+// Intercalar cuentas por dueño
 // ══════════════════════════════════════════
 function interleaveByOwner(accounts) {
-  // 1. Extraer cuentas VIP primero (las que tienen "vip" en su nombre)
   const vipAccounts = [];
   const normalAccounts = [];
   
@@ -77,7 +151,6 @@ function interleaveByOwner(accounts) {
     }
   }
 
-  // 2. Intercalar las cuentas normales por dueño
   const byOwner = {};
   for (const acc of normalAccounts) {
     const key = acc.ownerChatId || 'default';
@@ -89,7 +162,7 @@ function interleaveByOwner(accounts) {
   let interleavedNormal = [];
   
   if (owners.length <= 1) {
-    interleavedNormal = normalAccounts; // Un solo dueño o sin dueños, no hace falta intercalar
+    interleavedNormal = normalAccounts;
   } else {
     const maxLen = Math.max(...owners.map(o => o.length));
     for (let i = 0; i < maxLen; i++) {
@@ -99,12 +172,11 @@ function interleaveByOwner(accounts) {
     }
   }
   
-  // 3. Devolver: PRIMERO los VIPs, LUEGO los normales intercalados
   return [...vipAccounts, ...interleavedNormal];
 }
 
 // ══════════════════════════════════════════
-// Distribuir cuentas equitativamente
+// Distribuir cuentas equitativamente (round-robin)
 // ══════════════════════════════════════════
 function distributeAccounts(accounts, workerCount) {
   const groups = Array.from({ length: workerCount }, () => []);
@@ -115,42 +187,38 @@ function distributeAccounts(accounts, workerCount) {
 }
 
 // ══════════════════════════════════════════
-// Distribuir CON REDUNDANCIA: cada cuenta va a 2 workers
-// Si worker-A falla, worker-B la rescata automáticamente
+// Distribuir CON REDUNDANCIA
 // ══════════════════════════════════════════
 function distributeWithRedundancy(accounts, workerCount) {
   const groups = Array.from({ length: workerCount }, () => []);
   accounts.forEach((acc, i) => {
-    // Worker primario: round-robin normal
     const primary = i % workerCount;
     groups[primary].push({ ...acc, _redundancyRole: 'primary' });
-    // DESACTIVADO PARA NO ASFIXIAR A LA UNCP CON TRÁFICO DOBLE
-    // const offset = Math.max(1, Math.floor(workerCount / 2));
-    // const secondary = (i + offset) % workerCount;
-    // if (secondary !== primary) {
-    //   groups[secondary].push({ ...acc, _redundancyRole: 'backup' });
-    // }
   });
   return groups;
 }
 
 // ══════════════════════════════════════════
-// Deduplicar resultados de redundancia
-// Si ambos workers procesaron la misma cuenta, queda 1 resultado
+// Distribuir pool de turnstile entre workers
 // ══════════════════════════════════════════
-function deduplicateResults(allResults) {
-  const seen = new Map();
-  for (const r of allResults) {
-    const existing = seen.get(r.dni);
-    if (!existing) {
-      seen.set(r.dni, r);
-    } else if (r.success && !existing.success) {
-      // Preferir el éxito sobre el fallo
-      seen.set(r.dni, r);
+function distributeTurnstilePool(pool, groups) {
+  const workerPools = Array.from({ length: groups.length }, () => []);
+  let tokenIndex = 0;
+  
+  for (let w = 0; w < groups.length; w++) {
+    let tokensNeeded = 0;
+    for (const acc of groups[w]) {
+      const isVip = acc.nombre && acc.nombre.toLowerCase().includes('vip');
+      tokensNeeded += isVip ? 3 : 1;
     }
-    // Si ambos son éxito ("YA UTILIZADO" en el segundo), queda el primero
+    tokensNeeded += Math.ceil(tokensNeeded * 0.15);
+    
+    for (let t = 0; t < tokensNeeded && tokenIndex < pool.length; t++) {
+      workerPools[w].push(pool[tokenIndex++]);
+    }
   }
-  return Array.from(seen.values());
+  
+  return workerPools;
 }
 
 // ══════════════════════════════════════════
@@ -180,64 +248,94 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
   }
 
   if (offlineWorkers.length > 0) {
-    log(`[COORD] ⚠️ ${offlineWorkers.length} worker(s) offline: ${offlineWorkers.map(w => w.url).join(", ")}`);
+    log(`[COORD] ⚠️ ${offlineWorkers.length} worker(s) offline`);
   }
 
-  // 2. Fallback: si no hay workers online, ejecutar localmente
   if (onlineWorkers.length === 0) {
     log(`[COORD] ❌ No hay workers online. Ejecutando LOCALMENTE...`);
     const { executeRawBatch } = require("./charola-engine");
     const result = await executeRawBatch(accounts, config);
-    return {
-      jobId,
-      mode: "local-fallback",
-      totalWorkers: 0,
-      ...result,
-      durationMs: Date.now() - startTime
-    };
+    return { jobId, mode: "local-fallback", totalWorkers: 0, ...result, durationMs: Date.now() - startTime };
   }
 
-  // 3. WARMUP CENTRALIZADO DESDE EL COORDINADOR
-  log(`[COORD] Iniciando WARM-UP centralizado (los workers esperarán la señal de ataque)...`);
-  const { warmUpWaitForApiOpen } = require("./charola-engine");
+  // 2. GENERAR POOL DE TURNSTILE (solo si useTurnstile está activo)
+  let turnstilePool = [];
+  const useTurnstile = config.useTurnstile === true && config.capsolverApiKey;
+  
+  if (useTurnstile) {
+    const vipCount = accounts.filter(a => a.nombre && a.nombre.toLowerCase().includes('vip')).length;
+    const normalCount = accounts.length - vipCount;
+    const totalTokens = (vipCount * 3 + normalCount) + Math.ceil((vipCount * 3 + normalCount) * 0.2);
+    log(`[COORD] 🛡️ Modo Turnstile activo. Necesita ~${totalTokens} tokens (${vipCount} VIP×3 + ${normalCount} normales + 20% margen)`);
+    
+    turnstilePool = await generateTurnstilePool(totalTokens, config.capsolverApiKey, log);
+    
+    if (turnstilePool.length < accounts.length) {
+      log(`[COORD] ⚠️ Solo se obtuvieron ${turnstilePool.length}/${totalTokens} tokens. Algunas cuentas pueden fallar.`);
+    }
+    
+    // Verificar tiempo restante antes de que expiren (5 min)
+    const elapsedGen = Math.round((Date.now() - startTime) / 1000);
+    const remainingValidity = 300 - elapsedGen;
+    log(`[COORD] ⏱️ Tokens válidos por ${remainingValidity}s más. Debe completar antes de que expiren.`);
+  } else {
+    log(`[COORD] ℹ️ Modo Turnstile DESACTIVADO (sin capsolverApiKey o useTurnstile=false)`);
+  }
+
+  // 3. WARMUP CENTRALIZADO
+  log(`[COORD] Iniciando WARM-UP centralizado...`);
+  const { warmUpWaitForApiOpen, getCsrfToken, generateFingerprint } = require("./charola-engine");
   const probeAccount = accounts[0];
   const maxWarmupMs = config.maxWarmupMs || 10 * 60 * 1000;
   
-  const warmup = await warmUpWaitForApiOpen(probeAccount, maxWarmupMs);
+  const warmupConfig = {
+    ...config,
+    turnstilePool: turnstilePool.length > 0 ? turnstilePool : undefined,
+  };
+  
+  const warmup = await warmUpWaitForApiOpen(probeAccount, maxWarmupMs, warmupConfig);
   if (warmup.probeSuccess) {
-    log(`[COORD] ⚡ ¡API ABIERTA! Cuenta sonda (${probeAccount.dni}) asegurada. Disparando a los workers simultáneamente...`);
+    log(`[COORD] ⚡ ¡API ABIERTA! Sonda (${probeAccount.dni}) asegurada. Disparando workers...`);
   } else {
-    log(`[COORD] ⚠️ Tiempo de warmup agotado o error en sonda. Disparando a los workers de todas formas...`);
+    log(`[COORD] ⚠️ Warmup sin éxito confirmado. Disparando workers de todas formas...`);
   }
 
-  // Capturar cookie extraída del warmup para compartir con todos los workers
-  const sharedCookies = warmup.cookies || null;
-  if (sharedCookies) {
-    log(`[COORD] 🍪 Cookie compartida extraída: ${sharedCookies.substring(0, 30)}... Se inyectará en todos los workers.`);
-  } else {
-    log(`[COORD] ⚠️ No se pudo extraer cookie del warmup. Workers atacarán sin cookie pre-calentada.`);
-  }
-
-  // 4. Intercalar cuentas por dueño y excluir sonda ya asegurada
+  // 4. Preparar cuentas para workers
   let accountsToDistribute = accounts;
   if (warmup.probeSuccess) {
     accountsToDistribute = accounts.filter(a => a.dni !== probeAccount.dni);
-    log(`[COORD] Cuenta sonda (${probeAccount.dni}) ya asegurada en warmup, excluyéndola de workers. Quedan ${accountsToDistribute.length} por distribuir.`);
+    log(`[COORD] Sonda excluida. ${accountsToDistribute.length} cuentas por distribuir.`);
   }
   accountsToDistribute = interleaveByOwner(accountsToDistribute);
   
   const onlineUrls = onlineWorkers.map(w => w.url);
-  // Usar redundancia: cada cuenta va a 2 workers para tolerancia a fallos
   const groups = distributeWithRedundancy(accountsToDistribute, onlineUrls.length);
+
+  // 5. Distribuir pool de turnstile entre workers
+  let workerTurnstilePools = [];
+  if (turnstilePool.length > 0) {
+    workerTurnstilePools = distributeTurnstilePool(turnstilePool, groups);
+  }
 
   log(`[COORD] Distribución:`);
   onlineUrls.forEach((url, i) => {
     const workerName = onlineWorkers[i].workerId || `worker-${i + 1}`;
-    log(`[COORD]   ${workerName} (${url}): ${groups[i].length} cuentas`);
+    const ttCount = workerTurnstilePools[i] ? workerTurnstilePools[i].length : 0;
+    log(`[COORD]   ${workerName} (${url}): ${groups[i].length} cuentas${ttCount > 0 ? `, ${ttCount} turnstile tokens` : ''}`);
   });
 
-  // 5. Enviar a TODOS los workers SIMULTÁNEAMENTE
-  log(`[COORD] Enviando a ${onlineUrls.length} workers simultáneamente (desfase 0ms, micro-waves en engine)...`);
+  // 6. CSRF token compartido (1 solo, reusable por 5 min)
+  let sharedCsrfToken = warmup.csrfToken || null;
+  if (!sharedCsrfToken && turnstilePool.length > 0) {
+    sharedCsrfToken = await getCsrfToken();
+    if (sharedCsrfToken) {
+      log(`[COORD] 🎫 CSRF token compartido obtenido`);
+    }
+  }
+  const sharedFingerprint = warmup.fingerprint || generateFingerprint();
+
+  // 7. Enviar a workers
+  log(`[COORD] Enviando a ${onlineUrls.length} workers simultáneamente...`);
 
   const workerPromises = onlineUrls.map(async (url, i) => {
     const workerName = onlineWorkers[i].workerId || `worker-${i + 1}`;
@@ -248,7 +346,25 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
     }
 
     try {
-      log(`[COORD] → Ordenando ataque a ${workerName} con ${workerAccounts.length} cuentas...`);
+      log(`[COORD] → ${workerName} con ${workerAccounts.length} cuentas...`);
+
+      const workerConfig = {
+        skipWarmup: true,
+        maxPostAttempts: 60,
+        retryDelayMs: 250,
+        max500Retries: 3,
+        delay500Ms: 2000,
+        globalTimeoutMs: 25000,
+        staggerMs: 15,
+        staggerOffset: i * 2,
+        cookies: warmup.cookies || null,
+      };
+
+      if (workerTurnstilePools[i] && workerTurnstilePools[i].length > 0) {
+        workerConfig.turnstilePool = workerTurnstilePools[i];
+        workerConfig._csrfToken = sharedCsrfToken;
+        workerConfig._fingerprint = sharedFingerprint + '-' + (i + 1);
+      }
 
       const res = await fetch(`${url}/execute`, {
         method: "POST",
@@ -259,33 +375,22 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
         body: JSON.stringify({
           jobId: `${jobId}-${workerName}`,
           accounts: workerAccounts,
-          config: {
-            skipWarmup: true,
-            maxPostAttempts: 60,
-            retryDelayMs: 250,
-            max500Retries: 3,
-            delay500Ms: 2000,
-            globalTimeoutMs: 15000,
-            staggerMs: 15,
-            staggerOffset: i * 2,
-            cookies: sharedCookies,
-          }
+          config: workerConfig
         }),
-        signal: AbortSignal.timeout(900000) // 15 minutos timeout (warmup puede tardar hasta 10min)
+        signal: AbortSignal.timeout(900000)
       });
 
       const startData = await res.json();
-
       if (!res.ok || startData.error) {
-        throw new Error(`Worker falló al iniciar: ${startData.error || res.statusText}`);
+        throw new Error(`Worker falló: ${startData.error || res.statusText}`);
       }
 
-      // ── Polling (evitar Idle Drop) ──
+      // Polling cada 1s
       const targetJobId = `${jobId}-${workerName}`;
       let finalData = null;
       
       while (true) {
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Polling cada 1s (antes 5s)
+        await new Promise(resolve => setTimeout(resolve, 1000));
         try {
           const statRes = await fetch(`${url}/status`, {
             headers: { "Authorization": `Bearer ${apiKey}` },
@@ -298,26 +403,21 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
             break;
           }
         } catch (pollErr) {
-          log(`[COORD] ⚠️ ${workerName}: Falló un ping de status, reintentando en 5s... (${pollErr.message})`);
-          // Ignorar timeouts de polling, seguir intentando
+          // Ignorar timeouts de polling
         }
       }
 
       if (finalData.error) {
-        throw new Error(`Worker reportó error interno: ${finalData.error}`);
+        throw new Error(`Worker error: ${finalData.error}`);
       }
 
       log(`[COORD] ← ${workerName}: ${finalData.successes}/${finalData.total} éxitos (${Math.round(finalData.durationMs / 1000)}s)`);
-
       if (onProgress) onProgress({ workerId: workerName, ...finalData });
-
       return { workerId: workerName, url, ...finalData };
 
     } catch (e) {
       logError(`[COORD] ← ${workerName}: ERROR — ${e.message}`);
-
-      // Fallback: intentar ejecutar localmente las cuentas de este worker
-      log(`[COORD] Ejecutando cuentas de ${workerName} LOCALMENTE como fallback...`);
+      log(`[COORD] Fallback local para ${workerName}...`);
       try {
         const { executeRawBatch } = require("./charola-engine");
         const localResult = await executeRawBatch(workerAccounts, config);
@@ -340,9 +440,7 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
           successes: 0,
           failures: workerAccounts.length,
           results: workerAccounts.map(a => ({
-            success: false,
-            dni: a.dni,
-            nombre: a.nombre,
+            success: false, dni: a.dni, nombre: a.nombre,
             reason: `Worker error: ${e.message}`
           })),
           durationMs: 0
@@ -353,39 +451,33 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
 
   const workerResults = await Promise.all(workerPromises);
 
-  // 5. Agregar resultados (incluir sonda si fue excluida de workers)
+  // 8. Agregar resultados
   const allResults = [];
-
-  // Primero agregar la cuenta sonda si fue asegurada en warmup
   if (warmup.probeSuccess) {
     allResults.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre, method: "warmup-probe" });
   }
-
   for (const wr of workerResults) {
     if (wr.results) allResults.push(...wr.results);
   }
 
-  const dedupedResults = allResults;
-
-  const totalSuccesses = dedupedResults.filter(r => r.success).length;
-  const totalFailures = dedupedResults.filter(r => !r.success).length;
-
+  const totalSuccesses = allResults.filter(r => r.success).length;
+  const totalFailures = allResults.filter(r => !r.success).length;
   const durationMs = Date.now() - startTime;
 
-  // 6. Resumen
+  // 9. Resumen
   log(`\n[COORD] ═══════════════════════════════`);
   log(`[COORD] RESUMEN FINAL`);
   log(`[COORD] Total: ${accounts.length} | Éxitos: ${totalSuccesses} | Fallos: ${totalFailures}`);
   log(`[COORD] Duración total: ${Math.round(durationMs / 1000)}s`);
   for (const wr of workerResults) {
-    const workerSuccesses = wr.results ? wr.results.filter(r => r.success).length : 0;
-    const workerTotal = wr.results ? wr.results.length : 0;
-    const icon = wr.error ? "🔴" : (workerSuccesses === workerTotal ? "🟢" : "🟡");
-    log(`[COORD]   ${icon} ${wr.workerId}: ${workerSuccesses}/${workerTotal} éxitos${wr.fallback ? " (fallback local)" : ""}`);
+    const ws = wr.results ? wr.results.filter(r => r.success).length : 0;
+    const wt = wr.results ? wr.results.length : 0;
+    const icon = wr.error ? "🔴" : (ws === wt ? "🟢" : "🟡");
+    log(`[COORD]   ${icon} ${wr.workerId}: ${ws}/${wt} éxitos${wr.fallback ? " (fallback)" : ""}`);
   }
   log(`[COORD] ═══════════════════════════════\n`);
 
-  for (const r of dedupedResults) {
+  for (const r of allResults) {
     const label = r.nombre ? `${r.nombre} (${r.dni})` : `DNI: ${r.dni}`;
     if (r.success) {
       log(`[COORD]   ✅ ${label}`);
@@ -401,14 +493,14 @@ async function executeDistributed(accounts, config = {}, onProgress = null, logg
     total: accounts.length,
     successes: totalSuccesses,
     failures: totalFailures,
-    results: dedupedResults,
+    results: allResults,
     workerDetails: workerResults,
     durationMs
   };
 }
 
 // ══════════════════════════════════════════
-// CLI: test y health check
+// CLI
 // ══════════════════════════════════════════
 if (require.main === module) {
   const arg = process.argv[2];
@@ -422,18 +514,24 @@ if (require.main === module) {
       }
       process.exit(0);
     });
-  } else if (arg === "--test") {
-    // Test con 1 cuenta ficticia (recibirá code=300 fuera de horario)
-    console.log("Ejecutando test distribuido con 1 cuenta...");
-    const testAccounts = [{ dni: "00000000", codigo: "TEST", nombre: "Test" }];
-    executeDistributed(testAccounts, {}).then(result => {
-      console.log("\nResultado:", JSON.stringify(result, null, 2));
+  } else if (arg === "--test-turnstile") {
+    const capsolverKey = process.env.CAPSOLVER_API_KEY;
+    if (!capsolverKey) {
+      console.log("Falta CAPSOLVER_API_KEY en .env");
+      process.exit(1);
+    }
+    console.log("Generando 3 tokens Turnstile de prueba...");
+    generateTurnstilePool(3, capsolverKey).then(tokens => {
+      console.log(`\nTokens obtenidos: ${tokens.length}`);
+      for (const t of tokens) {
+        console.log(`  ${t.substring(0, 60)}...`);
+      }
       process.exit(0);
     });
   } else {
     console.log("Uso:");
-    console.log("  node coordinator.js --health   → Verificar workers");
-    console.log("  node coordinator.js --test     → Test con cuenta ficticia");
+    console.log("  node coordinator.js --health          → Verificar workers");
+    console.log("  node coordinator.js --test-turnstile   → Probar CapSolver (3 tokens)");
     process.exit(0);
   }
 }
@@ -442,5 +540,6 @@ module.exports = {
   executeDistributed,
   healthCheckAll,
   distributeAccounts,
-  getWorkerUrls
+  getWorkerUrls,
+  generateTurnstilePool
 };

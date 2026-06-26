@@ -5,11 +5,12 @@
  *   - worker-server.js (en cada VPS worker)
  *   - charola-auto.js (ejecución local / fallback)
  * 
- * Exporta: warmUpWaitForApiOpen, processAccountRawPost, executeRawBatch
+ * Exporta: warmUpWaitForApiOpen, processAccountRawPost, executeRawBatch, getCsrfToken, checkApiOpenViaContador
  */
 
 const https = require("https");
 const dns = require("dns");
+const crypto = require("crypto");
 
 const KEEP_ALIVE_AGENT = new https.Agent({
   keepAlive: true,
@@ -21,10 +22,15 @@ const KEEP_ALIVE_AGENT = new https.Agent({
 
 const API_URL = process.env.UNCP_API_URL || "https://comensales.uncp.edu.pe/api/registros";
 const WEB_URL = process.env.UNCP_WEB_URL || "https://comedor.uncp.edu.pe/charola";
+const API_BASE = API_URL.replace(/\/registros$/, "");
 
 // ── Helpers ──
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function generateFingerprint() {
+  return crypto.randomBytes(16).toString("hex");
 }
 
 const FATAL_KEYWORDS = [
@@ -54,19 +60,66 @@ const BROWSER_HEADERS = {
   "Sec-Fetch-Site": "same-site"
 };
 
-// ── Construir headers de fetch combinando navegador + cookies opcionales ──
 function buildFetchHeaders(config = {}) {
   const headers = { ...BROWSER_HEADERS };
-  // Inyectar headers custom si el coordinador los envió
   if (config.headers) Object.assign(headers, config.headers);
-  // Inyectar cookie si el coordinador la extrajo del warmup
   if (config.cookies) headers["Cookie"] = config.cookies;
   return headers;
 }
 
 // ═══════════════════════════════════════════════════════════════
-// WARM-UP: sondear la API hasta que abra y asegure cupo con la sonda
-// FILOSOFÍA: REINTENTAR SIEMPRE salvo éxito definitivo (200/201)
+// CSRF TOKEN: GET /api/registros/token → { token: "eyJ..." }
+// Válido por 5 minutos (300s). Reusable para múltiples POSTs.
+// ═══════════════════════════════════════════════════════════════
+async function getCsrfToken() {
+  try {
+    const res = await fetch(`${API_BASE}/registros/token`, {
+      headers: BROWSER_HEADERS,
+      agent: KEEP_ALIVE_AGENT,
+      signal: AbortSignal.timeout(15000)
+    });
+    const json = await res.json();
+    return json.token || null;
+  } catch (e) {
+    console.log(`[CSRF] Error obteniendo token: ${e.message}`);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CONTADOR: GET /api/registros/contador → { t3_estado: 0|1, ... }
+// GRATIS — no requiere CSRF ni Turnstile. t3_estado=1 → API abierta.
+// ═══════════════════════════════════════════════════════════════
+async function checkApiOpenViaContador() {
+  try {
+    const res = await fetch(`${API_BASE}/registros/contador`, {
+      headers: BROWSER_HEADERS,
+      agent: KEEP_ALIVE_AGENT,
+      signal: AbortSignal.timeout(8000)
+    });
+    const json = await res.json();
+    return json.t3_estado === 1;
+  } catch (e) {
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// POOL DE TURNSTILE TOKENS — consume 1 token por POST
+// ═══════════════════════════════════════════════════════════════
+function createTurnstilePool(tokens) {
+  const pool = Array.isArray(tokens) ? [...tokens] : [];
+  let index = 0;
+  return {
+    take: () => (index < pool.length ? pool[index++] : null),
+    remaining: () => pool.length - index,
+    size: () => pool.length
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WARM-UP: sondear la API hasta que abra
+// Sondeo dual: GET /contador (gratis) como principal, POST como fallback
 // ═══════════════════════════════════════════════════════════════
 async function warmUpWaitForApiOpen(probeAccount, maxWaitMs, config = {}) {
   const maxWait = maxWaitMs || 10 * 60 * 1000;
@@ -74,89 +127,145 @@ async function warmUpWaitForApiOpen(probeAccount, maxWaitMs, config = {}) {
   let attempt = 0;
   let lastMsg = '';
   let extractedCookies = null;
+  let contadorFailCount = 0;
 
   const fetchHeaders = buildFetchHeaders(config);
+  const hasTurnstile = Array.isArray(config.turnstilePool) && config.turnstilePool.length > 0;
+  const turnstilePool = hasTurnstile ? createTurnstilePool(config.turnstilePool) : null;
+  let csrfToken = config.csrfToken || null;
+  const fingerprint = config.fingerprint || generateFingerprint();
 
-  console.log(`[WARMUP] Sondeando API con DNI ${probeAccount.dni} hasta que abra... (máx ${Math.round(maxWait / 1000)}s)`);
-  console.log(`[WARMUP] 🛡️ Headers de navegador activados (Chrome 137)`);
-  console.log(`[WARMUP] 📈 Sondeo dinámico: 1500ms → 800ms → 400ms cerca de hora cero`);
+  console.log(`[WARMUP] Sondeando API hasta que abra... (máx ${Math.round(maxWait / 1000)}s)`);
+  console.log(`[WARMUP] 📈 Sondeo dinámico: 1500ms → 800ms → 400ms | Dual: contador(gratis) + POST fallback`);
+  if (hasTurnstile) {
+    console.log(`[WARMUP] 🛡️ Turnstile pool: ${turnstilePool.size()} tokens disponibles`);
+  }
 
   while (Date.now() - startTime < maxWait) {
     attempt++;
-    // Sondeo dinámico: reducir intervalo al acercarse a hora cero
     const elapsed = Date.now() - startTime;
     const elapsedSec = elapsed / 1000;
     let probeIntervalMs;
     if (elapsedSec < 120) {
-      probeIntervalMs = 1500; // Primeros 2 min: sondeo normal
+      probeIntervalMs = 1500;
     } else if (elapsedSec < 165) {
-      probeIntervalMs = 800;  // Minuto 2-3: sondeo acelerado
+      probeIntervalMs = 800;
     } else {
-      probeIntervalMs = 400;  // Últimos 30s antes de hora cero: sondeo agresivo
+      probeIntervalMs = 400;
     }
-    try {
-      const body = `data=${encodeURIComponent(JSON.stringify({ t1_dni: probeAccount.dni, t1_codigo: probeAccount.codigo }))}`;
 
-      const res = await fetch(API_URL, {
-        method: "POST",
-        headers: { ...fetchHeaders, "Content-Type": "application/x-www-form-urlencoded" },
-        body,
-        agent: KEEP_ALIVE_AGENT,
-        signal: AbortSignal.timeout(8000)
-      });
-
-      // ── Extraer cookie PHPSESSID de la respuesta ──
-      const setCookieHeader = res.headers.get("set-cookie");
-      if (setCookieHeader) {
-        const phpMatch = setCookieHeader.match(/PHPSESSID=([^;]+)/);
-        if (phpMatch) {
-          extractedCookies = `PHPSESSID=${phpMatch[1]}`;
-          if (attempt <= 3) {
-            console.log(`[WARMUP] 🍪 Cookie extraída: ${extractedCookies.substring(0, 30)}...`);
+    // ── SONDEO PRINCIPAL: GET /contador (gratis, sin tokens) ──
+    if (hasTurnstile) {
+      const isOpen = await checkApiOpenViaContador();
+      if (isOpen === true) {
+        console.log(`[WARMUP] 🟢 Contador dice API abierta (t3_estado=1) en intento ${attempt}`);
+        // Confirmar con POST real (consume 1 CSRF + 1 turnstile)
+        if (!csrfToken) csrfToken = await getCsrfToken();
+        const turnstileToken = turnstilePool.take();
+        if (csrfToken && turnstileToken) {
+          const body = `data=${encodeURIComponent(JSON.stringify({ t1_dni: probeAccount.dni, t1_codigo: probeAccount.codigo }))}&csrf_token=${encodeURIComponent(csrfToken)}&turnstile_token=${encodeURIComponent(turnstileToken)}&fingerprint=${fingerprint}&website=`;
+          try {
+            const res = await fetch(API_URL, {
+              method: "POST",
+              headers: { ...fetchHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+              body,
+              agent: KEEP_ALIVE_AGENT,
+              signal: AbortSignal.timeout(8000)
+            });
+            const json = await res.json();
+            const msg = String(json.message || json.msg || "").toUpperCase().trim();
+            if (json.code === 200 || json.code === 201) {
+              console.log(`[WARMUP] ¡API ABIERTA! Cupo asegurado para DNI ${probeAccount.dni}`);
+              console.log(`[RAW_SUCCESS] DNI: ${probeAccount.dni}`);
+              return { open: true, probeSuccess: true, dni: probeAccount.dni, cookies: extractedCookies, csrfToken, fingerprint };
+            }
+            if (msg.includes("YA UTILIZADO")) {
+              console.log(`[WARMUP] API abierta — sonda ya tiene ticket`);
+              return { open: true, probeSuccess: true, dni: probeAccount.dni, cookies: extractedCookies, csrfToken, fingerprint };
+            }
+            console.log(`[WARMUP] Contador abierto pero POST dio: code=${json.code} msg="${json.message||json.msg}". API puede estar en transición.`);
+            return { open: true, probeSuccess: false, dni: probeAccount.dni, cookies: extractedCookies, csrfToken, fingerprint };
+          } catch (e) {
+            console.log(`[WARMUP] Contador abierto pero POST falló: ${e.message}. Lanzando ataque.`);
+            return { open: true, probeSuccess: false, cookies: extractedCookies, csrfToken, fingerprint };
           }
         }
+        console.log(`[WARMUP] Contador abierto pero sin tokens (CSRF/turnstile). Lanzando ataque.`);
+        return { open: true, probeSuccess: false, cookies: extractedCookies, csrfToken, fingerprint };
       }
-
-      const json = await res.json();
-      const msg = String(json.message || "").toUpperCase().trim();
-      lastMsg = json.message || '';
-
-      if (attempt <= 3 || attempt % 10 === 0) {
-        console.log(`[WARMUP] Intento ${attempt} (${Math.round((Date.now() - startTime) / 1000)}s): code=${json.code} message="${json.message}"`);
+      if (isOpen === null) {
+        contadorFailCount++;
+        if (contadorFailCount >= 3) {
+          console.log(`[WARMUP] ⚠️ Contador falló ${contadorFailCount} veces. Cambiando a POST fallback...`);
+        }
       }
+    }
 
-      // ═══ ÚNICO CASO DE ÉXITO: código 200 o 201 ═══
-      if (json.code === 200 || json.code === 201) {
-        console.log(`[WARMUP] ¡API ABIERTA! Cupo asegurado en sondeo para DNI ${probeAccount.dni} (intento ${attempt}, ${Math.round((Date.now() - startTime) / 1000)}s)`);
-        console.log(`[RAW_SUCCESS] DNI: ${probeAccount.dni}`);
-        return { open: true, probeSuccess: true, dni: probeAccount.dni, cookies: extractedCookies };
+    // ── SONDEO FALLBACK: POST directo (gasta turnstile si disponible) ──
+    const usePostFallback = !hasTurnstile || contadorFailCount >= 3;
+    if (usePostFallback) {
+      try {
+        let body = `data=${encodeURIComponent(JSON.stringify({ t1_dni: probeAccount.dni, t1_codigo: probeAccount.codigo }))}`;
+        if (hasTurnstile) {
+          if (!csrfToken) csrfToken = await getCsrfToken();
+          const tt = turnstilePool.take();
+          if (csrfToken && tt) {
+            body += `&csrf_token=${encodeURIComponent(csrfToken)}&turnstile_token=${encodeURIComponent(tt)}&fingerprint=${fingerprint}&website=`;
+          }
+        }
+
+        const res = await fetch(API_URL, {
+          method: "POST",
+          headers: { ...fetchHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+          agent: KEEP_ALIVE_AGENT,
+          signal: AbortSignal.timeout(8000)
+        });
+
+        const setCookieHeader = res.headers.get("set-cookie");
+        if (setCookieHeader) {
+          const phpMatch = setCookieHeader.match(/PHPSESSID=([^;]+)/);
+          if (phpMatch) extractedCookies = `PHPSESSID=${phpMatch[1]}`;
+        }
+
+        const json = await res.json();
+        const msg = String(json.message || json.msg || "").toUpperCase().trim();
+        lastMsg = json.message || json.msg || '';
+
+        if (attempt <= 3 || attempt % 10 === 0) {
+          console.log(`[WARMUP] Intento ${attempt} (${Math.round(elapsedSec)}s): code=${json.code} msg="${json.message||json.msg}"`);
+        }
+
+        if (json.code === 200 || json.code === 201) {
+          console.log(`[WARMUP] ¡API ABIERTA! Cupo asegurado para DNI ${probeAccount.dni} (intento ${attempt})`);
+          console.log(`[RAW_SUCCESS] DNI: ${probeAccount.dni}`);
+          return { open: true, probeSuccess: true, dni: probeAccount.dni, cookies: extractedCookies, csrfToken, fingerprint };
+        }
+        if (msg.includes("YA UTILIZADO")) {
+          console.log(`[WARMUP] API activa — sonda ya tiene ticket`);
+          return { open: true, probeSuccess: true, dni: probeAccount.dni, cookies: extractedCookies, csrfToken, fingerprint };
+        }
+        if (isFatalError(msg)) {
+          console.log(`[WARMUP] Error fatal: "${json.message||json.msg}". API abierta pero sonda falló.`);
+          return { open: true, probeSuccess: false, dni: probeAccount.dni, reason: json.message||json.msg, cookies: extractedCookies, csrfToken, fingerprint };
+        }
+        await sleep(probeIntervalMs);
+      } catch (e) {
+        if (attempt <= 3 || attempt % 10 === 0) {
+          console.log(`[WARMUP] Intento ${attempt}: Error red (${e.message})`);
+        }
+        await sleep(probeIntervalMs);
       }
-
-      // "YA UTILIZADO" = API activa, ya tiene ticket
-      if (msg.includes("YA UTILIZADO")) {
-        console.log(`[WARMUP] API activa — cuenta sonda ya tiene ticket. Lanzando ataque.`);
-        return { open: true, probeSuccess: true, dni: probeAccount.dni, cookies: extractedCookies };
-      }
-
-      // Error FATAL de datos (DNI inválido, etc.) — no tiene sentido seguir sondeando con esta cuenta
-      if (isFatalError(msg)) {
-        console.log(`[WARMUP] Error fatal de datos: "${json.message}". Considerando API abierta pero sonda falló.`);
-        return { open: true, probeSuccess: false, dni: probeAccount.dni, reason: json.message, cookies: extractedCookies };
-      }
-
-      // ═══ CUALQUIER OTRA RESPUESTA → REINTENTAR ═══
-      await sleep(probeIntervalMs);
-
-    } catch (e) {
-      if (attempt <= 3 || attempt % 10 === 0) {
-        console.log(`[WARMUP] Intento ${attempt}: Timeout/Error de red (${e.message}), reintentando...`);
+    } else {
+      if (attempt <= 3 || attempt % 20 === 0) {
+        console.log(`[WARMUP] Intento ${attempt} (${Math.round(elapsedSec)}s): contador t3_estado=0 (API cerrada)`);
       }
       await sleep(probeIntervalMs);
     }
   }
 
-  console.log(`[WARMUP] Tiempo máximo de espera agotado (${Math.round(maxWait / 1000)}s). Último msg: "${lastMsg}". Lanzando ataque de todas formas.`);
-  return { open: false, probeSuccess: false, cookies: extractedCookies };
+  console.log(`[WARMUP] Tiempo agotado (${Math.round(maxWait / 1000)}s). Último: "${lastMsg}". Lanzando ataque.`);
+  return { open: false, probeSuccess: false, cookies: extractedCookies, csrfToken, fingerprint };
 }
 
 // Flag global: si cualquier cuenta detecta CUPOS AGOTADOS, todas se detienen
@@ -164,15 +273,7 @@ let globalCuposAgotados = false;
 
 // ═══════════════════════════════════════════════════════════════
 // ATAQUE RAW: procesar UNA cuenta con reintentos inteligentes
-// 
-// ESTRATEGIA:
-//   - 404/300 (API flaky)        → retry rápido cada 250ms (atrapa apertura)
-//   - 500 (MySQL deadlock)       → retry cada 2s, máx 3 veces (deadlock cleara en 1-2s)
-//   - 200/201 (éxito)            → return inmediato
-//   - YA UTILIZADO               → return inmediato (éxito)
-//   - FATAL (DNI inválido, etc.) → return inmediato (no reintentar)
-//   - CUPOS AGOTADOS             → flag global, detener TODO
-//   - Timeout global: 15s        → parar sin importar el intento
+// Incluye CSRF + Turnstile si config.turnstilePool está disponible
 // ═══════════════════════════════════════════════════════════════
 async function processAccountRawPost(account, config = {}) {
   const prefix = `[${new Date().toLocaleString()}] [DNI: ${account.dni}] [RAW]`;
@@ -180,24 +281,45 @@ async function processAccountRawPost(account, config = {}) {
   const retryDelayPostMs = config.retryDelayMs || 250;
   const max500Retries = config.max500Retries || 3;
   const delay500Ms = config.delay500Ms || 2000;
-  const globalTimeoutMs = config.globalTimeoutMs || 15000;
+  const globalTimeoutMs = config.globalTimeoutMs || 25000;
 
   const fetchHeaders = buildFetchHeaders(config);
   const startTime = Date.now();
   let count500 = 0;
 
+  const hasTurnstile = !!config._turnstilePool;
+  const turnstilePool = config._turnstilePool;
+  let csrfToken = config._csrfToken || null;
+  const fingerprint = config._fingerprint || generateFingerprint();
+
   for (let attempt = 1; attempt <= maxPostAttempts; attempt += 1) {
     if (globalCuposAgotados) {
       return { success: false, dni: account.dni, nombre: account.nombre, reason: "Cupos agotados (global)" };
     }
-
     if (Date.now() - startTime > globalTimeoutMs) {
       console.log(`[RAW_FAIL] DNI: ${account.dni} | Timeout global (${globalTimeoutMs / 1000}s)`);
       return { success: false, dni: account.dni, nombre: account.nombre, reason: `Timeout global (${globalTimeoutMs / 1000}s)` };
     }
 
     try {
-      const body = `data=${encodeURIComponent(JSON.stringify({ t1_dni: account.dni, t1_codigo: account.codigo }))}`;
+      let body = `data=${encodeURIComponent(JSON.stringify({ t1_dni: account.dni, t1_codigo: account.codigo }))}`;
+
+      if (hasTurnstile) {
+        if (!csrfToken) {
+          csrfToken = await getCsrfToken();
+          if (!csrfToken) {
+            console.log(`${prefix} Sin CSRF token disponible, esperando...`);
+            await sleep(retryDelayPostMs);
+            continue;
+          }
+        }
+        const tt = turnstilePool.take();
+        if (!tt) {
+          console.log(`${prefix} Pool de turnstile vacío, no se puede continuar`);
+          return { success: false, dni: account.dni, nombre: account.nombre, reason: "Pool turnstile agotado" };
+        }
+        body += `&csrf_token=${encodeURIComponent(csrfToken)}&turnstile_token=${encodeURIComponent(tt)}&fingerprint=${fingerprint}&website=`;
+      }
 
       const res = await fetch(API_URL, {
         method: "POST",
@@ -208,34 +330,42 @@ async function processAccountRawPost(account, config = {}) {
       });
 
       const json = await res.json();
-      const msg = String(json.message || "").toUpperCase().trim();
+      const msg = String(json.message || json.msg || "").toUpperCase().trim();
 
-      // ═══ ÉXITO ═══
       if (json.code === 200 || json.code === 201) {
         console.log(`[RAW_SUCCESS] DNI: ${account.dni}`);
         return { success: true, dni: account.dni, nombre: account.nombre };
       }
-
-      // "YA UTILIZADO" = ya tiene cupo
       if (msg.includes("YA UTILIZADO")) {
-        console.log(`[RAW_SUCCESS] DNI: ${account.dni} (ticket ya existía en BD)`);
+        console.log(`[RAW_SUCCESS] DNI: ${account.dni} (ticket ya existía)`);
         return { success: true, dni: account.dni, nombre: account.nombre, note: "Ya tenía ticket" };
       }
-
-      // ═══ CUPOS AGOTADOS → flag global, detener TODO ═══
       if (msg.includes("CUPOS AGOTADOS") || msg.includes("AGOTADO")) {
-        console.log(`[RAW_FAIL] DNI: ${account.dni} | CUPOS AGOTADOS — deteniendo todas las cuentas`);
+        console.log(`[RAW_FAIL] DNI: ${account.dni} | CUPOS AGOTADOS — deteniendo todo`);
         globalCuposAgotados = true;
         return { success: false, dni: account.dni, nombre: account.nombre, reason: "Cupos agotados" };
       }
 
-      // ═══ ERROR FATAL DE DATOS → no reintentar ═══
-      if (isFatalError(msg)) {
-        console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR FATAL: ${json.message} (code=${json.code})`);
-        return { success: false, dni: account.dni, nombre: account.nombre, reason: json.message };
+      // ── CSRF expirado → refrescar y reintentar ──
+      if (msg.includes("CSRF_EXPIRED") || msg.includes("CSRF_INVALID") || msg.includes("CSRF_MISSING")) {
+        console.log(`${prefix} CSRF expirado, refrescando...`);
+        csrfToken = await getCsrfToken();
+        await sleep(retryDelayPostMs);
+        continue;
       }
 
-      // ═══ ERROR 500 = MySQL DEADLOCK → retry con espera de 2s ═══
+      // ── Turnstile inválido → tomar otro token y reintentar ──
+      if (msg.includes("TURNSTILE_MISSING") || msg.includes("TURNSTILE_INVALID")) {
+        console.log(`${prefix} Turnstile inválido, tomando otro token...`);
+        await sleep(retryDelayPostMs);
+        continue;
+      }
+
+      if (isFatalError(msg)) {
+        console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR FATAL: ${json.message||json.msg} (code=${json.code})`);
+        return { success: false, dni: account.dni, nombre: account.nombre, reason: json.message||json.msg };
+      }
+
       if (json.code === 500) {
         count500++;
         if (count500 > max500Retries) {
@@ -249,58 +379,59 @@ async function processAccountRawPost(account, config = {}) {
         continue;
       }
 
-      // ═══ 404/300/OTRO = API flaky → retry rápido cada 250ms ═══
       if (attempt % 20 === 0) {
-        console.log(`${prefix} Intento ${attempt}/${maxPostAttempts}: code=${json.code} msg="${json.message || 'sin mensaje'}", reintentando...`);
+        console.log(`${prefix} Intento ${attempt}/${maxPostAttempts}: code=${json.code} msg="${json.message||json.msg||'sin mensaje'}"`);
       }
       await sleep(retryDelayPostMs);
 
     } catch (e) {
-      if (attempt % 20 === 0) console.log(`${prefix} Intento ${attempt}: Timeout/Error red (${e.message}), reintentando...`);
+      if (attempt % 20 === 0) console.log(`${prefix} Intento ${attempt}: Error red (${e.message})`);
       await sleep(retryDelayPostMs);
     }
   }
-  console.log(`[RAW_FAIL] DNI: ${account.dni} | ERROR: Max intentos agotado (${maxPostAttempts})`);
+  console.log(`[RAW_FAIL] DNI: ${account.dni} | Max intentos agotado (${maxPostAttempts})`);
   return { success: false, dni: account.dni, nombre: account.nombre, reason: `Max intentos agotado (${maxPostAttempts})` };
 }
 
-
-
 // ═══════════════════════════════════════════════════════════════
-// EJECUTAR BATCH COMPLETO: warmup → oleadas → rescate
+// EJECUTAR BATCH COMPLETO: warmup → tren de aterrizaje
 // ═══════════════════════════════════════════════════════════════
 async function executeRawBatch(accounts, config = {}) {
   const maxWarmupMs = config.maxWarmupMs || 10 * 60 * 1000;
   const startTime = Date.now();
 
-  console.log(`[ENGINE] Iniciando ejecución RAW para ${accounts.length} cuenta(s).`);
-  console.log(`[ENGINE] Modo: tren de aterrizaje (15ms stagger) + url-encoded + retries inteligentes (500→2s, 404→250ms, timeout=15s)`);
+  const hasTurnstile = Array.isArray(config.turnstilePool) && config.turnstilePool.length > 0;
 
-  // ── FASE A: Warm-up ──
+  console.log(`[ENGINE] Iniciando ejecución RAW para ${accounts.length} cuenta(s).`);
+  if (hasTurnstile) {
+    console.log(`[ENGINE] Modo: tren de aterrizaje + url-encoded + CSRF/Turnstile (${config.turnstilePool.length} tokens) + timeout=25s`);
+  } else {
+    console.log(`[ENGINE] Modo: tren de aterrizaje + url-encoded + retries inteligentes (500→2s, 404→250ms, timeout=25s)`);
+  }
+
   let pendingAccounts;
   const results = [];
 
   if (config.skipWarmup) {
-    console.log(`[ENGINE] ⚡ Saltando WARMUP por orden del Coordinador. Lanzando cuentas...`);
+    console.log(`[ENGINE] ⚡ Saltando WARMUP. Lanzando cuentas...`);
     pendingAccounts = [...accounts];
   } else {
     const probeAccount = accounts[0];
-    const warmup = await warmUpWaitForApiOpen(probeAccount, maxWarmupMs);
+    const warmup = await warmUpWaitForApiOpen(probeAccount, maxWarmupMs, config);
 
     if (warmup.probeSuccess) {
       pendingAccounts = accounts.filter(a => a.dni !== probeAccount.dni);
       results.push({ success: true, dni: probeAccount.dni, nombre: probeAccount.nombre, method: "warmup" });
-      console.log(`[ENGINE] Cuenta sonda (${probeAccount.dni}) asegurada. Atacando ${pendingAccounts.length} restantes...`);
+      console.log(`[ENGINE] Sonda (${probeAccount.dni}) asegurada. Atacando ${pendingAccounts.length} restantes...`);
     } else {
       pendingAccounts = [...accounts];
       console.log(`[ENGINE] API ${warmup.open ? 'abierta' : 'estado desconocido'}. Atacando TODAS las ${pendingAccounts.length} cuentas...`);
     }
+    if (warmup.csrfToken) config._csrfToken = warmup.csrfToken;
+    if (warmup.fingerprint) config._fingerprint = warmup.fingerprint;
   }
 
-  // ── FASE B: "Tren de Aterrizaje" — stagger individual anti-deadlock ──
-  // Cada cuenta se dispara con STAGGER_MS de diferencia.
-  // MySQL procesa 1 transacción a la vez → cero Lock Upgrade Deadlocks.
-  // El coordinator envía staggerOffset para que workers no se pisen entre sí.
+  // ── FASE B: "Tren de Aterrizaje" ──
   if (pendingAccounts.length > 0) {
     try {
       const apiHost = new URL(API_URL).hostname;
@@ -312,32 +443,50 @@ async function executeRawBatch(accounts, config = {}) {
 
     const STAGGER_MS = config.staggerMs || 15;
     const staggerOffset = config.staggerOffset || 0;
+    const turnstilePool = hasTurnstile ? createTurnstilePool(config.turnstilePool) : null;
+    const fingerprint = config._fingerprint || generateFingerprint();
 
-    console.log(`[ENGINE] 🚀 Tren de aterrizaje: ${pendingAccounts.length} cuentas, ${STAGGER_MS}ms entre cada una (offset ${staggerOffset}ms)`);
+    if (!config._csrfToken && hasTurnstile) {
+      config._csrfToken = await getCsrfToken();
+    }
+
+    const sharedConfig = {
+      ...config,
+      _turnstilePool: turnstilePool,
+      _csrfToken: config._csrfToken,
+      _fingerprint: fingerprint
+    };
+
+    if (turnstilePool) {
+      console.log(`[ENGINE] 🚀 Tren de aterrizaje: ${pendingAccounts.length} cuentas, ${STAGGER_MS}ms stagger (offset ${staggerOffset}ms) | Turnstile: ${turnstilePool.remaining()}/${turnstilePool.size()} tokens`);
+    } else {
+      console.log(`[ENGINE] 🚀 Tren de aterrizaje: ${pendingAccounts.length} cuentas, ${STAGGER_MS}ms stagger (offset ${staggerOffset}ms)`);
+    }
 
     const allPromises = pendingAccounts.map((acc, i) => {
       const fireAt = staggerOffset + (i * STAGGER_MS);
       return (async () => {
         await sleep(fireAt);
-
         if (globalCuposAgotados) {
           return { success: false, dni: acc.dni, nombre: acc.nombre, reason: "Cupos agotados (global)" };
         }
-
         const isVip = acc.nombre && acc.nombre.toLowerCase().includes('vip');
         if (isVip) {
           return Promise.all([
-            processAccountRawPost(acc, config),
-            processAccountRawPost(acc, config),
-            processAccountRawPost(acc, config)
+            processAccountRawPost(acc, sharedConfig),
+            processAccountRawPost(acc, sharedConfig),
+            processAccountRawPost(acc, sharedConfig)
           ]).then(shots => shots.find(r => r.success) || shots[0]);
         }
-        return processAccountRawPost(acc, config);
+        return processAccountRawPost(acc, sharedConfig);
       })();
     });
 
     const allResults = await Promise.all(allPromises);
     results.push(...allResults);
+    if (turnstilePool) {
+      console.log(`[ENGINE] Turnstile restantes: ${turnstilePool.remaining()}/${turnstilePool.size()}`);
+    }
     globalCuposAgotados = false;
   }
 
@@ -371,5 +520,8 @@ module.exports = {
   warmUpWaitForApiOpen,
   processAccountRawPost,
   executeRawBatch,
+  getCsrfToken,
+  checkApiOpenViaContador,
+  generateFingerprint,
   sleep
 };
